@@ -632,6 +632,33 @@ const ROW_ROLES = new Set(["row", "LayoutTableRow"]);
 const CHAIN_MAX_HOPS = 25;
 
 /**
+ * How many options a COLLAPSED combobox prints before the rest fold into one
+ * counted line. A closed <select> shows ONE value on screen while its AX
+ * subtree carries every option — a version picker shipped ~900 of them, which
+ * ate the whole snapshot budget (995 entries, the page's own content truncated
+ * away) and drowned read_text in 17k chars of labels nobody can see (Monaco
+ * playground, round 13). The selected option always prints past the cap, and a
+ * snapshot scoped to the combobox's own uid prints the full list — that escape
+ * hatch is what the folded line points at. select_option is unaffected either
+ * way: its option-collector walks the DOM, not these lines.
+ */
+const COLLAPSED_OPTION_MAX = 12;
+
+/**
+ * The collapsed combobox an option is folded under, or null. Climbed over the
+ * render's OWN parentOf map (same pattern as rowChain) because a native
+ * <select>'s options may sit under an optgroup between them and the combobox.
+ */
+function collapsedComboAncestor(container, parentOf) {
+  let at = container;
+  for (let hops = 0; at && hops < CHAIN_MAX_HOPS; hops += 1) {
+    if (at.role?.value === "combobox" && axStateFlag(at, "expanded") === false) return at;
+    at = parentOf.get(at);
+  }
+  return null;
+}
+
+/**
  * The cell/row lookups for ONE render, over that render's map of emitted node →
  * its container. Testing `container.role` alone is what broke row joining on
  * every real table: a cell whose text lives on a nested LINK is itself NAMELESS
@@ -1510,6 +1537,13 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
   const interactiveOf = new Map();
   const { cellOf, rowOf } = rowChain(parentOf);
   /**
+   * Per COLLAPSED combobox: how many options printed, how many folded, and the
+   * slot the folded count is written into once the walk knows it. The slot is
+   * pushed as null (the same convention closeRun uses) and rewritten at the
+   * end, so byHref/run indices stay valid.
+   */
+  const optionCaps = new Map();
+  /**
    * True when a CONTROL up the chain already takes the click this node would.
    * Surfaces are climbed past rather than counted — see SURFACE_ROLES for why a
    * map body holding a uid must not disqualify the markers drawn on it.
@@ -1618,6 +1652,30 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     // is capped: past a dozen levels the shape is no longer readable anyway and
     // the width would come out of the page's own text.
     const indent = " ".repeat(Math.min(depth, SNAPSHOT_INDENT_MAX));
+    // Options of a COLLAPSED combobox past the cap fold into one counted line
+    // (see COLLAPSED_OPTION_MAX). The [selected] option always prints — it is
+    // the control's current value, the one thing a capped list must not hide —
+    // and a snapshot SCOPED to the combobox itself is the full-list escape
+    // hatch, so that scope is exempt.
+    if (role === "option") {
+      const combo = collapsedComboAncestor(container, parentOf);
+      if (combo && combo.backendDOMNodeId !== startBackendNodeId) {
+        let cap = optionCaps.get(combo);
+        if (!cap) {
+          cap = { shown: 0, omitted: 0, markerIndex: -1, indent };
+          optionCaps.set(combo, cap);
+        }
+        if (cap.shown >= COLLAPSED_OPTION_MAX && axStateFlag(node, "selected") !== true) {
+          cap.omitted += 1;
+          if (cap.markerIndex === -1) {
+            cap.markerIndex = lines.length;
+            lines.push(null);
+          }
+          return;
+        }
+        cap.shown += 1;
+      }
+    }
     // An icon-only control usually carries its label in `title`, which Chrome
     // delivers as the AX DESCRIPTION — the only thing that tells a page full of
     // `button ""` lines apart. Read it ONLY as a last resort: it never replaces
@@ -1772,6 +1830,15 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
       : null;
   }, scopeDomIds);
   closeRun();
+  // The folded-option slots get their counts now that the walk knows them. A
+  // combobox that never overflowed its cap left no slot to fill.
+  for (const cap of optionCaps.values()) {
+    if (cap.markerIndex !== -1 && cap.omitted > 0) {
+      lines[cap.markerIndex] =
+        `${cap.indent}… ${cap.omitted} more options not shown (collapsed combobox) — ` +
+        "select_option accepts any option label; snapshot the combobox's uid to list them all";
+    }
+  }
   return found
     ? lines.filter((line) => line !== null && !isBracketNoiseSnapshotLine(line))
     : null;
@@ -1826,6 +1893,14 @@ export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
     if (rowName.length < RUN_ECHO_MIN_CHARS) return;
     if (stripSpaces(openRow.cellTexts.join("")).includes(rowName)) lines[label.index] = null;
   };
+  /**
+   * Options folded per COLLAPSED combobox: the reading view answers what the
+   * page LOOKS like, and a closed dropdown shows its value alone (which the
+   * combobox node itself prints) — every option label under it is invisible
+   * text, and a ~900-option version picker drowned the whole page in it
+   * (round 13). ALL of them fold here, into one counted line per combobox.
+   */
+  const optionCaps = new Map();
   /** Same mid-word-highlight suppression renderAxTree does — see closeRun there. */
   const closeTextRun = (incoming) => {
     if (run && run.segments.length > 1) {
@@ -1846,6 +1921,19 @@ export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
     parentOf.set(node, container);
     const echoed = !value && Boolean(name) && containsAsToken(covered, name);
     if ((!name && !value) || echoed) return;
+    if (role === "option") {
+      const combo = collapsedComboAncestor(container, parentOf);
+      if (combo && combo.backendDOMNodeId !== startBackendNodeId) {
+        let cap = optionCaps.get(combo);
+        if (!cap) {
+          cap = { omitted: 0, markerIndex: lines.length };
+          optionCaps.set(combo, cap);
+          lines.push(null);
+        }
+        cap.omitted += 1;
+        return;
+      }
+    }
     const printed = name && value ? `${name}: ${value}` : name || value;
     // The whitespace this node's own text carries at each end, read before the
     // trim the emit did: at every seam below it is the difference between the
@@ -1927,6 +2015,9 @@ export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
   }, scopeDomIds);
   closeTextRun();
   settleRowLabel();
+  for (const cap of optionCaps.values()) {
+    lines[cap.markerIndex] = `(${cap.omitted} options in a collapsed dropdown, not shown)`;
+  }
   return found ? lines.filter((line) => line !== null && !isBracketNoise(line)) : null;
 }
 

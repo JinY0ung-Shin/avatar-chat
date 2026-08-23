@@ -2977,6 +2977,39 @@ const UNVERIFIED_CLEAR_NOTE =
   '= "…" value in the returned snapshot before relying on it.';
 
 /**
+ * Bridge note for a write into the hidden PROXY input of a custom-rendered
+ * editor. Monaco (and editors built like it) route all input through a ~1px
+ * offscreen textarea while the text the user sees lives in a render layer the
+ * accessibility tree does not carry — so the proxy reads back "" before AND
+ * after a write that actually landed. The divergedNote for that case said the
+ * field "now reads ''" and told the agent not to build on it, reporting a
+ * SUCCEEDED write as a failure (round 13: a clear+type that replaced the whole
+ * Monaco document verified as ''). Geometry is what tells the two apart: a
+ * real field that swallowed the text is visible; a proxy is a sliver.
+ */
+const HIDDEN_PROXY_NOTE =
+  "This input reads back empty, but it is a visually hidden (~1px) element — the hidden proxy input " +
+  "of a custom editor (Monaco-style), whose real text lives in a render layer this tree cannot read. " +
+  "The write was dispatched and most likely landed; verify the editor's VISIBLE content with a " +
+  "screenshot instead of this field's value.";
+
+/** Sliver check for HIDDEN_PROXY_NOTE: is this element ~invisible on screen? */
+async function isHiddenProxyInput(ref) {
+  try {
+    const { model } = await sendCdp(
+      { tabId: ref.tabId, sessionId: ref.sessionId },
+      "DOM.getBoxModel",
+      { backendNodeId: ref.backendNodeId },
+    );
+    return Number(model?.width) <= 4 || Number(model?.height) <= 4;
+  } catch {
+    // Unmeasurable is not evidence of a proxy — fall back to the honest
+    // diverged note rather than promising the write landed.
+    return false;
+  }
+}
+
+/**
  * Clear a field and write `value` into it — the whole of `clear: true`, and the
  * only path here that can silently do the wrong thing, so it is the only one
  * that reads the field back. Returns the bridge note the caller must relay
@@ -3034,7 +3067,22 @@ async function clearAndWrite(ref, target, value, insert) {
   await overtype();
   let after = await settledValue(valueNode);
   if (after === null) return UNVERIFIED_CLEAR_NOTE;
-  if (!clearFailed(before, after, value)) return divergedNote(after, value);
+  if (!clearFailed(before, after, value)) {
+    // "" before AND "" after a non-empty write means the readback carried no
+    // information at any point — when the element is also a ~1px sliver, this
+    // is a custom editor's hidden proxy input, not a failed write (see
+    // HIDDEN_PROXY_NOTE). Checked only on this already-diverged path, so the
+    // extra CDP read costs nothing on ordinary fields.
+    if (
+      value &&
+      String(before ?? "") === "" &&
+      String(after ?? "") === "" &&
+      (await isHiddenProxyInput(valueNode))
+    ) {
+      return HIDDEN_PROXY_NOTE;
+    }
+    return divergedNote(after, value);
+  }
 
   // Rung B.
   if (await imeRewrite(target, value, after)) {
@@ -3858,6 +3906,7 @@ async function captureShot(tab, message) {
   const dsf = pxPerCssRaw / zoom || 1;
   let clip;
   let beyondViewport = false;
+  let note = "";
   if (uidQuads) {
     // Quads are viewport-relative; the capture clip is page-absolute.
     const xs = [];
@@ -3868,14 +3917,38 @@ async function captureShot(tab, message) {
         ys.push(quad[i + 1]);
       }
     }
-    const pad = 8;
+    // UNpadded on purpose: fractions get measured on this image and handed to
+    // click_at/drag as fractions OF THE ELEMENT'S BOX, so the image's edges
+    // must BE the box's edges. The 8px pad this used to add skewed every
+    // measured fraction by pad/size per axis — 1.5% on a 550px-tall chart,
+    // which is exactly how far two legend clicks missed in the field
+    // (round 13, echarts editor).
     clip = {
-      x: Math.max(0, Math.min(...xs) - pad + (viewport.pageX || 0)),
-      y: Math.max(0, Math.min(...ys) - pad + (viewport.pageY || 0)),
-      width: Math.max(...xs) - Math.min(...xs) + pad * 2,
-      height: Math.max(...ys) - Math.min(...ys) + pad * 2,
+      x: Math.max(0, Math.min(...xs) + (viewport.pageX || 0)),
+      y: Math.max(0, Math.min(...ys) + (viewport.pageY || 0)),
+      width: Math.max(...xs) - Math.min(...xs),
+      height: Math.max(...ys) - Math.min(...ys),
     };
-    beyondViewport = true;
+    // Captured from the LIVE surface whenever the element fits the visible
+    // viewport (quadsOf scrolled it in already). captureBeyondViewport
+    // re-lays-out a responsive page around the capture even when the clip is
+    // fully inside the viewport (probe-measured, round13-facts.spec.ts: the
+    // page's own resize listener fires, flag-off it does not) — and a chart
+    // library redraws its canvas from exactly that listener, so the flag is
+    // reserved for the one case that needs it: an element too big for the
+    // viewport, where it is the only way to get the pixels at all.
+    beyondViewport =
+      Math.min(...xs) < -1 ||
+      Math.min(...ys) < -1 ||
+      Math.max(...xs) > (viewport.clientWidth || 0) + 1 ||
+      Math.max(...ys) > (viewport.clientHeight || 0) + 1;
+    if (beyondViewport) {
+      note =
+        "This element extends beyond the visible viewport, so it was captured with the page surface " +
+        "expanded. A responsive layout can render at sizes and positions the screen does not show in " +
+        "such a capture — do not measure click_at/drag coordinates or fractions on it; scroll the " +
+        "element fully into view and re-capture, or use a plain viewport screenshot.";
+    }
   } else if (message.fullPage) {
     clip = {
       x: 0,
@@ -3947,7 +4020,7 @@ async function captureShot(tab, message) {
     pageX: viewport.pageX || 0,
     pageY: viewport.pageY || 0,
   };
-  return { imageBase64: data, imageMimeType: "image/jpeg" };
+  return { imageBase64: data, imageMimeType: "image/jpeg", ...(note ? { note } : {}) };
 }
 
 /** Wait for the tab to stop loading, so a snapshot reflects the new page. */

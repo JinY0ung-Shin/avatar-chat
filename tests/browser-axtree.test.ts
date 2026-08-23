@@ -3090,3 +3090,68 @@ describe("round 11 — capSnapshot focus pass", () => {
     expect(out).toContain("The element just acted on ([e180])");
   });
 });
+
+describe("collapsed combobox option folding (round 13)", () => {
+  /**
+   * The Monaco-playground shape: a CLOSED <select> whose AX subtree still
+   * carries every option — ~900 on the version picker, which ate the whole
+   * snapshot budget and drowned read_text while the screen showed one value.
+   */
+  const versionPicker = (selectedAt: number, expanded = false) => {
+    const optionIds = Array.from({ length: 20 }, (_, i) => `o${i + 1}`);
+    return [
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "combobox", "버전", optionIds, {
+        backendDOMNodeId: 5,
+        value: { value: `v${selectedAt}` },
+        properties: [{ name: "expanded", value: { value: expanded } }],
+      }),
+      ...optionIds.map((id, i) =>
+        node(id, "option", `v${i + 1}`, [], {
+          backendDOMNodeId: 10 + i,
+          ...(i + 1 === selectedAt
+            ? { properties: [{ name: "selected", value: { value: true } }] }
+            : {}),
+        }),
+      ),
+    ];
+  };
+
+  it("folds options past the cap into one counted line, keeping the selected one", () => {
+    const lines = render(versionPicker(18));
+    const options = lines.filter((line) => line.includes("] option "));
+    // 12 in document order plus the [selected] one from beyond the cap.
+    expect(options).toHaveLength(13);
+    expect(lines.join("\n")).toContain('option "v18" [selected]');
+    expect(lines.join("\n")).toContain(
+      "… 7 more options not shown (collapsed combobox) — select_option accepts any option label",
+    );
+  });
+
+  it("prints every option when the snapshot is SCOPED to the combobox itself", () => {
+    const lines = renderAxTree(versionPicker(18), uids(), undefined, {
+      startBackendNodeId: 5,
+    }) as string[];
+    expect(lines.filter((line) => line.includes("] option "))).toHaveLength(20);
+    expect(lines.join("\n")).not.toContain("more options not shown");
+  });
+
+  it("leaves an EXPANDED combobox alone — its options are on screen", () => {
+    const lines = render(versionPicker(18, true));
+    expect(lines.filter((line) => line.includes("] option "))).toHaveLength(20);
+    expect(lines.join("\n")).not.toContain("more options not shown");
+  });
+
+  it("read_text folds ALL of a closed dropdown's options — the screen shows only the value", () => {
+    const lines = renderAxText(versionPicker(18)) as string[];
+    expect(lines).toContain("버전: v18");
+    expect(lines).toContain("(20 options in a collapsed dropdown, not shown)");
+    expect(lines.some((line) => line === "v3")).toBe(false);
+  });
+
+  it("read_text scoped to the combobox still lists every option", () => {
+    const lines = renderAxText(versionPicker(18), 5) as string[];
+    expect(lines).toContain("v3");
+    expect(lines.join("\n")).not.toContain("collapsed dropdown");
+  });
+});
