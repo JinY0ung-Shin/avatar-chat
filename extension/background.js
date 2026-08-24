@@ -1833,6 +1833,51 @@ async function showTab(tab) {
   }
 }
 
+/**
+ * Force the compositor to produce one frame for a tab whose window is not in
+ * the foreground, so coordinate-routed input actually lands. Live-measured
+ * (VOC round 14, Windows Chrome): with the browser window fully COVERED by
+ * another window, occlusion tracking marks the page hidden
+ * (`document.visibilityState === "hidden"`) and frame production stops;
+ * `Input.dispatchMouseEvent` then delivers mouseMoved but silently DROPS
+ * mousePressed/mouseReleased — click, click_at, drag and select_option all
+ * reported success while the page's own listeners counted no mousedown/mouseup
+ * at all. Key events, hit tests and snapshots keep working, which made the
+ * drop look like a page bug for most of a session. `showTab` cannot help: the
+ * tab was already ACTIVE; it is the WINDOW that has no live surface. One
+ * `Page.captureScreenshot` forces a composited frame, after which the input
+ * router has current hit-test state and the very next click lands — measured
+ * four out of four times in the field, and the page cannot even observe the
+ * difference (visibilityState stays "hidden" throughout).
+ *
+ * Gated on window FOCUS rather than visibility: occlusion is not readable from
+ * here (no `Runtime.*` in CDP_ALLOWLIST, no content scripts), but a focused
+ * window is by definition frontmost and painting, so the warm costs nothing in
+ * the watched case and is at worst wasted on a visible-but-unfocused window.
+ * Full-viewport capture on purpose — cheapest encode settings, but no `clip`,
+ * because a clipped capture warming less than the whole surface is a guess
+ * this fix must not rest on. Fail-open throughout: a warm that cannot run must
+ * not turn a maybe-dropped click into a certainly-failed op.
+ */
+async function ensureFrameForInput(tab) {
+  try {
+    const win = await chrome.windows.get(tab.windowId);
+    if (win.focused) return;
+  } catch {
+    // Window unknowable (closing race): warm anyway — cheap and harmless.
+  }
+  try {
+    await sendCdp({ tabId: tab.id }, "Page.captureScreenshot", {
+      format: "jpeg",
+      quality: 1,
+      optimizeForSpeed: true,
+    });
+  } catch {
+    // The op below runs against the same target and will surface a real error
+    // with more context than this warm could.
+  }
+}
+
 /** Dispatch a full left click (move → press → release) at a viewport point. */
 async function clickPoint(target, x, y) {
   const base = { x, y, button: "left", clickCount: 1, pointerType: "mouse" };
@@ -4494,6 +4539,10 @@ async function performOp(message, stagingOrigin) {
   // browser-side input router — dropped unless the tab's view is visible.
   if (VISIBLE_OPS.has(message.op) || (message.op === "read_text" && message.expand)) {
     await showTab(tab);
+    // `screenshot` mints its own frame by capturing; every other op here is
+    // about to DISPATCH input and needs the compositor awake first (occluded
+    // windows drop mouse press/release — see ensureFrameForInput).
+    if (message.op !== "screenshot") await ensureFrameForInput(tab);
   }
 
   // An open JS dialog freezes the renderer: every page-touching command below
