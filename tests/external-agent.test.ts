@@ -682,14 +682,20 @@ describe("external agent SDK event bridge", () => {
         { event: "message_stop", data: {} },
       ],
       async (endpoint) => {
-        const folded: string[] = [];
+        // One combined log: the fold must reach the host AHEAD of the new
+        // block's first delta, or the host's sinks sweep that chunk into the
+        // reasoning view and the kept answer loses its head.
+        const order: string[] = [];
         const result = await runExternalAgent(
           { message: "설명하고 답해" },
           externalConfig(endpoint),
-          { onTextFold: (text) => folded.push(text) },
+          {
+            onDelta: (text) => order.push(`delta:${text}`),
+            onTextFold: (text) => order.push(`fold:${text}`),
+          },
         );
         // The gateway stream is consumed as-is; the fold is Noah-side only.
-        expect(folded).toEqual(["중간 설명"]);
+        expect(order).toEqual(["delta:중간 설명", "fold:중간 설명", "delta:최종 답"]);
         expect(result.text).toBe("최종 답");
       },
     );

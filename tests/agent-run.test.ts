@@ -619,6 +619,26 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     expect(response.text).toBe("B");
   });
 
+  it("emits the fold BEFORE the new block's first delta", async () => {
+    const { config, store, baseRequest } = setup();
+    // Wire order the chat-route/client sinks assume: `text_fold` arrives ahead
+    // of the new block's first chunk. Folding after dispatch put the fold
+    // BEHIND that chunk, so the sinks (foldedTextOffset / liveText → thinking)
+    // swept it into the reasoning view and clipped the head off every
+    // post-fold block — live and, on the cancel/error paths, persisted.
+    const order: string[] = [];
+    const events = makeEvents({
+      onDelta: (text) => order.push(`delta:${text}`),
+      onTextFold: (text) => order.push(`fold:${text}`),
+    });
+    sdkMock.impl = () => handleFrom(foldStream);
+
+    const response = await runAgentStream(baseRequest, [], config, store, events);
+
+    expect(order).toEqual(["delta:A", "fold:A", "delta:B"]);
+    expect(response.text).toBe("B");
+  });
+
   it("keeps the legacy full join when the run has no onTextFold sink", async () => {
     const { config, store, baseRequest } = setup();
     // Same stream, sink without onTextFold → the documented no-sink contract:

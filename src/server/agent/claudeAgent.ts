@@ -21,6 +21,7 @@ import {
   dispatchSdkMessage,
   finalizeTurnUsage,
   foldPendingText,
+  peekMainTextDelta,
   resultErrorMessage,
 } from "./sdkMessageHandlers.js";
 
@@ -412,14 +413,21 @@ export async function runClaudeAgent(
         if (!isRecord(message)) {
           continue;
         }
+        // A delta arriving while completed chunks are still unfolded means a
+        // NEW text block just started (block k's deltas stream BEFORE block
+        // k's assembled `assistantText` is recorded), so the narration so far
+        // demotes to the reasoning view. The fold must run BEFORE dispatch:
+        // dispatch emits this very delta through onDelta, and the fold has to
+        // reach the sinks ahead of the new block's first chunk — behind it,
+        // they sweep that chunk into the reasoning view and the kept text
+        // loses its head (live bubble always; persisted text on the
+        // cancel/error paths via foldedTextOffset). Later deltas of the SAME
+        // block no-op: chunkIndex already caught up.
+        if (peekMainTextDelta(message)) {
+          foldPendingText(textFold, assistantChunks, deltaChunks, events, false);
+        }
         const dispatched = dispatchSdkMessage(message, events, state);
         if (dispatched.delta) {
-          // A delta arriving while completed chunks are still unfolded means a
-          // NEW text block just started (block k's deltas stream BEFORE block
-          // k's assembled `assistantText` is recorded), so the narration so far
-          // demotes to the reasoning view. Later deltas of the SAME block no-op:
-          // chunkIndex already caught up.
-          foldPendingText(textFold, assistantChunks, deltaChunks, events, false);
           deltaChunks.push(dispatched.delta);
         }
         if (dispatched.assistantText) {

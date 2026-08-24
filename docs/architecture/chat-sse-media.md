@@ -37,6 +37,10 @@
   attachment to 0, and emits an SSE `text_fold` frame. The client mirrors it exactly (`liveText` →
   `liveThinking`, bubble restarts, live cards re-anchored to 0); the frame rides the ordered run-event
   replay buffer, so a reconnect replays it between the two text bursts and lands on the same state.
+  **Ordering is part of the contract:** both runners fold BEFORE dispatching the delta that triggered it
+  (`peekMainTextDelta`), so the `text_fold` frame always precedes the new block's first `delta` frame on
+  the wire — a fold emitted after that delta lets the sinks sweep the chunk into the reasoning view and
+  clips the head off the kept block (live, and permanently on the cancel/error paths).
   **Gated on the sink:** with no `onTextFold` (headless routines, `POST /api/chat`) the runners fold
   nothing and keep the legacy full join — the `AgentEvents` no-sink contract. Attachment anchors are
   therefore TAIL-relative on both sides (`currentTextAnchor` slices from the fold index).

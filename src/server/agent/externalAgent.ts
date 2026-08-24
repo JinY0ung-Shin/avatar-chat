@@ -12,6 +12,7 @@ import {
   dispatchSdkMessage,
   finalizeTurnUsage,
   foldPendingText,
+  peekMainTextDelta,
   resultErrorMessage,
 } from "./sdkMessageHandlers.js";
 
@@ -461,11 +462,15 @@ export async function runExternalAgent(
           "";
         throw new Error(upstreamFailure(message));
       }
+      // First delta of a NEW text block → the narration so far is superseded
+      // and demotes to the reasoning view. Fold BEFORE dispatch so the fold
+      // reaches the sinks ahead of the chunk dispatch emits (see
+      // foldPendingText / peekMainTextDelta).
+      if (peekMainTextDelta(decoded)) {
+        foldPendingText(textFold, assistantChunks, deltaChunks, externalEvents, false);
+      }
       const dispatched = dispatchSdkMessage(decoded, externalEvents, loopState);
       if (dispatched.delta) {
-        // First delta of a NEW text block → the narration so far is superseded
-        // and demotes to the reasoning view (see foldPendingText).
-        foldPendingText(textFold, assistantChunks, deltaChunks, externalEvents, false);
         deltaChunks.push(dispatched.delta);
       }
       if (dispatched.assistantText) {

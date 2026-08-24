@@ -668,24 +668,55 @@ export function resultErrorMessage(subtype: string): string {
 }
 
 /**
+ * The main-agent text delta carried by this message, or "" for anything else
+ * (subagent deltas, thinking deltas, non-stream messages).
+ *
+ * WHY it is separate from `handleStreamEvent`: the streaming loops must detect a
+ * main-agent text delta BEFORE calling `dispatchSdkMessage`, because dispatch is
+ * what emits the delta through `onDelta`. A fold triggered by this delta has to
+ * reach the sinks AHEAD of the new block's first chunk — behind it, the sinks
+ * sweep that chunk into the reasoning view and the kept text loses its head
+ * (the live bubble always; the persisted text on the cancel/error paths, which
+ * slice from `foldedTextOffset`).
+ */
+export function peekMainTextDelta(message: Record<string, unknown>): string {
+  if (message.type !== "stream_event" || asString(message.parent_tool_use_id)) {
+    return "";
+  }
+  const event = isRecord(message.event) ? message.event : undefined;
+  if (
+    !event ||
+    event.type !== "content_block_delta" ||
+    !isRecord(event.delta) ||
+    event.delta.type !== "text_delta"
+  ) {
+    return "";
+  }
+  return asString(event.delta.text);
+}
+
+/**
  * Parse a single SDK `stream_event` message and fire matching streaming
  * callbacks. Returns the text delta (if any) so callers can accumulate it.
  * Subagent deltas (parent_tool_use_id set) are NOT appended to the main bubble.
+ *
+ * The text branch delegates to `peekMainTextDelta` so the loops' pre-dispatch
+ * peek and this dispatch can never drift into disagreeing about what counts as
+ * a main-agent text delta.
  */
 export function handleStreamEvent(message: Record<string, unknown>, events: AgentEvents): string {
+  const text = peekMainTextDelta(message);
+  if (text) {
+    events.onDelta?.(text);
+    return text;
+  }
   const event = isRecord(message.event) ? message.event : undefined;
   if (!event) {
     return "";
   }
   const isMain = !asString(message.parent_tool_use_id);
   if (event.type === "content_block_delta" && isRecord(event.delta)) {
-    if (event.delta.type === "text_delta") {
-      const text = asString(event.delta.text);
-      if (text && isMain) {
-        events.onDelta?.(text);
-        return text;
-      }
-    } else if (event.delta.type === "thinking_delta") {
+    if (event.delta.type === "thinking_delta") {
       // Reasoning stream: forward to the dedicated thinking view only. It is NOT
       // returned (so the caller never appends it to the answer bubble's deltas).
       const thinking = asString(event.delta.thinking);

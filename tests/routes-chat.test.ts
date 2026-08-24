@@ -1066,6 +1066,36 @@ describe("cancellation + run registry", () => {
     expect(assistant.response?.summary).toBe("중지됨");
   }, LIVE);
 
+  it("persists the post-fold block with its head intact when stopped", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "foldcancel").expect(201)).body.user.id as string;
+    // The runners fold BEFORE dispatching the delta that triggered it, so the
+    // route sees the fold ahead of the new block's first chunk. In that order
+    // foldedTextOffset lands at the START of "최종 답"; behind the chunk it would
+    // land past its head and the stop would persist a clipped answer forever.
+    H.impl = async (_req, _pr, config, _store, events, ac) => {
+      events.onDelta?.("중간 설명");
+      events.onTextFold?.("중간 설명");
+      events.onDelta?.("최종 답");
+      await new Promise<never>((_resolve, reject) => {
+        if (ac.signal.aborted) return reject(new Error("aborted"));
+        ac.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+      return { kind: "text", runtime: config.agentRuntime, summary: "x", text: "x" };
+    };
+
+    const streamDone = fireStream(owner, { avatarId: ownerId, conversationId: "conv-foldcancel", message: "느린 요청" });
+    await waitUntil(async () => (await activeRun(owner, "conv-foldcancel")) !== null, "run active");
+    const run = (await activeRun(owner, "conv-foldcancel"))!;
+    await owner.post(`/api/chat/runs/${run.runId}/cancel`).send({}).expect(200);
+    await streamDone;
+
+    const assistant = store.listMessages(ownerId, "conv-foldcancel").find((m) => m.role === "assistant")!;
+    expect(assistant.content).toBe("최종 답");
+    expect(assistant.response?.thinking).toContain("중간 설명");
+  }, LIVE);
+
   it("replays the buffered events to a late watcher on the run-events endpoint", async () => {
     const { app } = boot();
     const owner = request.agent(app);
