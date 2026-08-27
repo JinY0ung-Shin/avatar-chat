@@ -39,8 +39,9 @@ const CDP_VERSION = "1.3";
 
 /**
  * Default-deny allowlist of CDP methods. Everything the bridge needs and
- * nothing else — notably no `Runtime.*`, no `Network.*` (which would reach
- * cookies), no `Storage.*`, no `Browser.*`. The read-only additions stay
+ * nothing else — notably no `Runtime.*`, no `Storage.*`, no `Browser.*`, and of
+ * `Network.*` ONLY the consent-gated `Network.getCookies` (its own paragraph
+ * below), never the event-streaming rest. The read-only additions stay
  * inside that line: `DOM.describeNode` reads structure, `Page.captureScreenshot`
  * reads pixels — the same exfiltration class as a snapshot, gated by the same
  * origin allowlist — `DOM.getNodeForLocation` hit-tests a point so a
@@ -82,6 +83,20 @@ const CDP_VERSION = "1.3";
  * `Page.captureScreenshot`, which is why captureShot hides before it captures.
  * No other `Overlay.*` method belongs here — `setInspectMode` would hand the
  * user's own cursor to an inspector, and `getHighlightObjectForTest` is a READ.
+ *
+ * `Network.getCookies` is the ONE `Network.*` method here, and it is not the
+ * open door the domain's name suggests: it is a COMMAND that reads the cookie
+ * store for a given URL, NOT an event subscription — probe-measured
+ * (`tests/visual/cookie-facts.spec.ts`) to answer with only DOM/Page enabled, so
+ * `Network.enable` (which would stream every request and response — a far wider
+ * read) stays OFF the list, the DOMSnapshot.enable rule once more. read_cookies
+ * calls it with `urls:[tab.url]`, so ONLY the current tab's origin is ever read
+ * (never a cross-site cookie), and it runs ONLY after the user approves a
+ * per-site, per-session popup in their own browser (requestCookieConsent — the
+ * first read of a site each browser session prompts; an approval is remembered
+ * until the user revokes it or the browser closes). What it returns is
+ * the user's live session tokens — the reason for both the consent gate and the
+ * audit that logs cookie NAMES only, never values.
  */
 const CDP_ALLOWLIST = new Set([
   "Accessibility.enable",
@@ -101,6 +116,7 @@ const CDP_ALLOWLIST = new Set([
   "Input.dispatchMouseEvent",
   "Input.imeSetComposition",
   "Input.insertText",
+  "Network.getCookies",
   "Overlay.enable",
   "Overlay.highlightNode",
   "Overlay.hideHighlight",
@@ -796,8 +812,15 @@ const CONSENT_UNANSWERED =
   "The user did not answer the tab-group prompt in time, so no tab was opened. " +
   "Tell the user a confirmation popup appears in their browser when you open a tab, and retry when they are ready.";
 
+const COOKIE_CONSENT_DECLINED =
+  "The user declined to share this site's cookies, so no cookies were read. " +
+  "Do not retry — tell the user which site's cookies you wanted and why, and let them decide.";
+const COOKIE_CONSENT_UNANSWERED =
+  "The user did not answer the cookie-access prompt in time, so no cookies were read. " +
+  "Tell the user a confirmation popup appears in their browser when you read cookies, and retry when they are ready.";
+
 let consentSeq = 0;
-/** The single in-flight consent: { token, windowId, timer, settle }. */
+/** The single in-flight consent: { token, windowId, timer, settle, declinedReason }. */
 let pendingConsent = null;
 
 function settleConsent(token, outcome) {
@@ -811,34 +834,40 @@ function settleConsent(token, outcome) {
   settle(outcome);
 }
 
-/** Ask the user, in extension UI, whether to create the Noah group for `url`. */
-async function requestGroupConsent(url) {
+/**
+ * Open the single-slot consent popup and resolve with { granted, reason? }. The
+ * SAME window, token-settle, timeout and decline handling serve every kind of
+ * consent (tab-group creation, cookie access) — only the query the popup renders
+ * and the model-facing reasons differ, so the caller passes those in.
+ * `declinedReason` is stored on the pending record because the decline paths
+ * (the popup's message and the window-close) fire from handlers that do not know
+ * which kind of consent is open.
+ */
+async function openConsentPopup({
+  query,
+  alreadyOpenReason,
+  openFailedReason,
+  declinedReason,
+  unansweredReason,
+}) {
   if (pendingConsent) {
-    return {
-      granted: false,
-      reason:
-        "A tab-group confirmation popup is already open in the user's browser. Wait for their answer instead of calling new_tab again.",
-    };
+    return { granted: false, reason: alreadyOpenReason };
   }
   const token = String(++consentSeq);
-  const page = `${chrome.runtime.getURL("consent.html")}?token=${token}&url=${encodeURIComponent(url)}`;
+  const page = `${chrome.runtime.getURL("consent.html")}?token=${token}&${query}`;
   let win;
   try {
     win = await chrome.windows.create({ url: page, type: "popup", width: 440, height: 400, focused: true });
   } catch (error) {
-    return {
-      granted: false,
-      reason:
-        `The consent popup could not be opened (${String(error?.message || error)}). Ask the user to create the ` +
-        `"${GROUP_TITLE}" tab group themselves: right-click a tab → add to new group → name it ${GROUP_TITLE}.`,
-    };
+    return { granted: false, reason: openFailedReason(error) };
   }
   return new Promise((resolve) => {
     pendingConsent = {
       token,
       windowId: win.id,
+      declinedReason,
       timer: setTimeout(
-        () => settleConsent(token, { granted: false, reason: CONSENT_UNANSWERED }),
+        () => settleConsent(token, { granted: false, reason: unansweredReason }),
         CONSENT_TIMEOUT_MS,
       ),
       settle: resolve,
@@ -846,20 +875,106 @@ async function requestGroupConsent(url) {
   });
 }
 
+/** Ask the user, in extension UI, whether to create the Noah group for `url`. */
+async function requestGroupConsent(url) {
+  return openConsentPopup({
+    query: `url=${encodeURIComponent(url)}`,
+    alreadyOpenReason:
+      "A tab-group confirmation popup is already open in the user's browser. Wait for their answer instead of calling new_tab again.",
+    openFailedReason: (error) =>
+      `The consent popup could not be opened (${String(error?.message || error)}). Ask the user to create the ` +
+      `"${GROUP_TITLE}" tab group themselves: right-click a tab → add to new group → name it ${GROUP_TITLE}.`,
+    declinedReason: CONSENT_DECLINED,
+    unansweredReason: CONSENT_UNANSWERED,
+  });
+}
+
+/**
+ * Per-site, per-browser-session cookie-consent grants. Once the user approves
+ * reading a site's cookies, that hostname is remembered here so the SAME site
+ * does not re-prompt for the rest of the session. storage.session (not local) is
+ * the deliberate store: it clears when the browser closes — exactly this grant's
+ * lifetime — and it survives the MV3 worker idling out between turns. Shape:
+ * { [hostname]: true }.
+ */
+const COOKIE_GRANTS_KEY = "cookieConsentGrants";
+
+async function readCookieGrants() {
+  try {
+    const stored = await chrome.storage.session.get(COOKIE_GRANTS_KEY);
+    const grants = stored?.[COOKIE_GRANTS_KEY];
+    return grants && typeof grants === "object" ? grants : {};
+  } catch {
+    // FAIL CLOSED: a read error must not auto-grant. Returning {} means the
+    // caller finds no grant and shows the popup, exactly as a first read would.
+    return {};
+  }
+}
+
+async function rememberCookieGrant(host) {
+  try {
+    const grants = await readCookieGrants();
+    grants[host] = true;
+    await chrome.storage.session.set({ [COOKIE_GRANTS_KEY]: grants });
+  } catch {
+    // A write failure costs only the MEMORY, never the read: the caller still
+    // returns granted for this approval, and the next read simply re-prompts.
+  }
+}
+
+/**
+ * Ask the user, in extension UI, whether to hand THIS tab's cookies (including
+ * httpOnly session tokens) to the avatar. Consent is per SITE, per browser
+ * SESSION: the first read of a host prompts, and once approved that host is
+ * remembered (readCookieGrants / rememberCookieGrant) so further reads of the
+ * SAME host skip the popup until the user revokes it or the browser closes. Still
+ * the un-bypassable gate that stops a server / headless / background path from
+ * reading cookies without the user's live approval — a background run reaches
+ * neither the popup nor a grant it never made.
+ */
+async function requestCookieConsent(host) {
+  // Already approved this site this session → honor it with no popup. A read
+  // error in readCookieGrants fails closed (returns {}), so we fall through to
+  // the popup rather than auto-granting.
+  const grants = await readCookieGrants();
+  if (grants[host] === true) return { granted: true };
+  const outcome = await openConsentPopup({
+    query: `kind=cookies&host=${encodeURIComponent(host)}`,
+    alreadyOpenReason:
+      "A confirmation popup is already open in the user's browser. Wait for their answer instead of retrying.",
+    openFailedReason: (error) =>
+      `The cookie-consent popup could not be opened (${String(error?.message || error)}), so no cookies were read. ` +
+      "Report this to the user rather than retrying.",
+    declinedReason: COOKIE_CONSENT_DECLINED,
+    unansweredReason: COOKIE_CONSENT_UNANSWERED,
+  });
+  // Remember ONLY a real approval; a decline / timeout / close records nothing,
+  // so the next read of this host prompts again.
+  if (outcome.granted) await rememberCookieGrant(host);
+  return outcome;
+}
+
 // Internal channel only — the consent page is part of this extension. Web
 // pages land on onMessageExternal instead, so no site content can answer.
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type !== "noah-group-consent") return;
+  // The decline reason belongs to whichever consent is open (group vs cookies).
+  // Read it BEFORE settleConsent nulls the record; the token guard inside makes
+  // a stale message a no-op regardless of what we compute here.
+  const declined = pendingConsent?.declinedReason || CONSENT_DECLINED;
   settleConsent(
     String(message.token),
-    message.allow ? { granted: true } : { granted: false, reason: CONSENT_DECLINED },
+    message.allow ? { granted: true } : { granted: false, reason: declined },
   );
 });
 
 // Closing the popup without clicking is an answer too: not granted.
 chrome.windows.onRemoved.addListener((windowId) => {
   if (pendingConsent && pendingConsent.windowId === windowId) {
-    settleConsent(pendingConsent.token, { granted: false, reason: CONSENT_DECLINED });
+    settleConsent(pendingConsent.token, {
+      granted: false,
+      reason: pendingConsent.declinedReason || CONSENT_DECLINED,
+    });
   }
 });
 
@@ -4618,6 +4733,59 @@ async function performOp(message, stagingOrigin) {
     return {
       ok: true,
       ...shot,
+      url: tab.url || "",
+      title: tab.title || "",
+      tabs: (await groupedTabs()).map(describeTab),
+    };
+  }
+
+  if (message.op === "read_cookies") {
+    // Consent per site, per browser session, in the user's own browser UI — the
+    // un-bypassable gate (requestCookieConsent prompts on the FIRST read of a
+    // host and remembers an approval for the session). The current tab already
+    // passed the origin allowlist above (read_cookies is NOT origin-exempt and
+    // the debugger is attached), so this only ever prompts for a site the
+    // operator already permits.
+    let host = "";
+    try {
+      host = new URL(tab.url || "").hostname;
+    } catch {
+      // Unparseable tab URL: fall back to the raw string for the popup.
+    }
+    const consent = await requestCookieConsent(host || tab.url || "");
+    if (!consent.granted) return { ok: false, message: consent.reason };
+    let raw;
+    try {
+      // Scoped to the current tab's URL ONLY — never the whole cookie jar, and
+      // never a cross-site cookie. getCookies is a command, not an event
+      // subscription, so it needs no Network.enable (see the CDP_ALLOWLIST
+      // rationale). httpOnly cookies (the session token) are included.
+      ({ cookies: raw } = await sendCdp({ tabId: tab.id }, "Network.getCookies", {
+        urls: [tab.url],
+      }));
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Could not read the tab's cookies: ${String(error?.message || error)}`,
+      };
+    }
+    let cookies = (Array.isArray(raw) ? raw : []).map((c) => ({
+      name: String(c?.name ?? ""),
+      value: String(c?.value ?? ""),
+      domain: String(c?.domain ?? ""),
+      path: String(c?.path ?? ""),
+      httpOnly: Boolean(c?.httpOnly),
+      secure: Boolean(c?.secure),
+      sameSite: typeof c?.sameSite === "string" ? c.sameSite : undefined,
+      // CDP reports -1 for a session cookie; surface only a real expiry.
+      expires: typeof c?.expires === "number" && c.expires > 0 ? c.expires : undefined,
+    }));
+    if (message.name) {
+      cookies = cookies.filter((c) => c.name === message.name);
+    }
+    return {
+      ok: true,
+      cookies,
       url: tab.url || "",
       title: tab.title || "",
       tabs: (await groupedTabs()).map(describeTab),

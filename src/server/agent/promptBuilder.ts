@@ -861,6 +861,10 @@ export function buildSystemPromptAppend(
         "Dropdowns are `select_option` (the select's uid + the option label from the snapshot), not arrow-key guessing. " +
         "To READ a long page (summarize, quote, extract), use `read_text` — plain text in offset-addressed chunks, far cheaper than snapshot; snapshot is for when you need uids to act. " +
         "When a page lazy-loads content as you scroll (feeds, comment threads showing only a few of many items), call `read_text` with `expand: true` — it scrolls through the page while reading so that content is loaded and included. " +
+        // read_cookies crosses a real boundary: it returns the user's live
+        // session tokens. The standing rule has to state the per-site consent
+        // gate AND the secret-handling rule, because neither is inferable.
+        "To read the CURRENT tab's cookies — including httpOnly login SESSION TOKENS the page's own scripts cannot see — use `read_cookies`, but ONLY when the task genuinely needs them. The user approves per site — the first read of a site each browser session prompts a popup in their own browser, and once approved, further reads of that same site that session do not re-prompt (a background run cannot use it at all, and the user can revoke a site in the extension); if they decline, do not retry — say which site's cookies you wanted and why. Only the current tab's origin is ever returned. The values are LIVE CREDENTIALS: use them solely for this task, and NEVER echo a cookie value into a reply, write it to a file or the knowledge repo, commit it, or send it to any other site, tool, or person. " +
         (request.visionEnabled !== false
           ? "When pixels matter (charts, maps, images, layout that seems broken), `screenshot` returns an actual image of the viewport, one element (uid), or the full page. " +
             "Every screenshot you take is also shared with the user as a file card in the chat (it opens in the preview panel), so the user sees each capture — refer to it instead of re-describing every detail. " +

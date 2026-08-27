@@ -37,6 +37,21 @@ export interface BridgeReply {
   pageText?: string;
   pageTextOffset?: number;
   pageTextTotal?: number;
+  /**
+   * read_cookies: the current tab origin's cookies. VALUES ARE SECRETS (the
+   * user's live session tokens) — the client only relays this reply straight
+   * back to the server, never rendering it. Mirrors server BrowserCookie.
+   */
+  cookies?: {
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite?: string;
+    expires?: number;
+  }[];
 }
 
 export interface BridgeOperation {
@@ -62,12 +77,15 @@ export interface BridgeOperation {
     | "handle_dialog"
     | "wait_for"
     | "read_text"
+    | "read_cookies"
     | "screenshot"
     | "list_tabs"
     | "new_tab"
     | "select_tab"
     | "close_tab";
   url?: string | null;
+  /** read_cookies only: return just this one cookie by name. */
+  name?: string | null;
   uid?: string | null;
   /** click_at/drag pixel mode: coordinates on the most recent viewport screenshot. */
   x?: number | null;

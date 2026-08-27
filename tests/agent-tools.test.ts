@@ -4247,6 +4247,7 @@ describe("browser bridge tools", () => {
     const argsByTool: Record<string, Record<string, unknown>> = {
       snapshot: {},
       read_text: {},
+      read_cookies: {},
       screenshot: {},
       navigate: { url: "https://intra.example" },
       navigate_back: {},
@@ -4270,6 +4271,55 @@ describe("browser bridge tools", () => {
     // The self-gate must short-circuit: the `mcp__` auto-allow means this
     // handler is the only thing standing between a colleague and the bridge.
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("read_cookies relays the optional name filter and renders the SECRET banner over the cookie table", async () => {
+    const execute = vi.fn(async () => ({
+      behavior: "ok" as const,
+      url: "https://intra.example/app",
+      title: "T",
+      cookies: [
+        {
+          name: "session",
+          value: "httponly-secret-value",
+          domain: "intra.example",
+          path: "/",
+          httpOnly: true,
+          secure: true,
+          sameSite: "Lax",
+          expires: 1900000000,
+        },
+      ],
+    }));
+    const tools = buildBrowserTools({ execute, allowed: true });
+
+    // The optional name filter rides through; omitted → no `name` on the wire.
+    await callTool(tools, "read_cookies", { name: "session" });
+    expect(execute).toHaveBeenLastCalledWith({ op: "read_cookies", name: "session" });
+    await callTool(tools, "read_cookies", {});
+    expect(execute).toHaveBeenLastCalledWith({ op: "read_cookies" });
+
+    const out = (await callTool(tools, "read_cookies", {})).content[0].text ?? "";
+    // The bridge-authored SECRET banner leads, naming the origin and forbidding
+    // the whole exfiltration surface — this is the mitigation the design required.
+    expect(out).toContain("SECURITY: the values below are this user's LIVE session credentials");
+    expect(out).toContain("https://intra.example/app");
+    expect(out).toContain("NEVER echo a cookie value");
+    // The value + attributes render for the model to USE, framed as untrusted data.
+    expect(out).toContain("session = httponly-secret-value");
+    expect(out).toContain("httpOnly");
+    expect(out).toContain("<cookie_data>");
+  });
+
+  it("read_cookies redirects the consent-declined / error branch instead of pretending success", async () => {
+    const execute = vi.fn(async () => ({
+      behavior: "error" as const,
+      message: "The user declined to share this site's cookies, so no cookies were read.",
+    }));
+    const tools = buildBrowserTools({ execute, allowed: true });
+    const res = await callTool(tools, "read_cookies", {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("declined to share this site's cookies");
   });
 
   it("passes the owner's operations through with the uid the model supplied", async () => {

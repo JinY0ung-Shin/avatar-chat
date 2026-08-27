@@ -29,7 +29,7 @@ import type {
   MessageAttachment,
   StoredMessage,
 } from "../types.js";
-import type { AgentEvents, BrowserTab } from "../agent/events.js";
+import type { AgentEvents, BrowserCookie, BrowserTab } from "../agent/events.js";
 import {
   formatSubmission,
   MAX_CANVAS_CONTENT_CHARS,
@@ -1900,6 +1900,7 @@ export async function executeChatTurn(
               requestId,
               op: requestData.op,
               url: requestData.url ?? null,
+              name: requestData.name ?? null,
               uid: requestData.uid ?? null,
               x: typeof requestData.x === "number" ? requestData.x : null,
               y: typeof requestData.y === "number" ? requestData.y : null,
@@ -1960,6 +1961,7 @@ export async function executeChatTurn(
               pageText?: string;
               pageTextOffset?: number;
               pageTextTotal?: number;
+              cookies?: BrowserCookie[];
             };
             if (!reply?.ok) {
               const raw =
@@ -1974,11 +1976,45 @@ export async function executeChatTurn(
                 : raw;
               return { behavior: "error", message };
             }
+            // read_cookies returns the CURRENT tab origin's cookies. This route
+            // is the primary size gate on extension-supplied strings, so bound
+            // the count and every field BEFORE anything reads them: the values
+            // are secrets, the names are page-controlled untrusted text, and
+            // both ride into the model turn. Shape-validate each entry so a
+            // hostile/oversized reply can't smuggle an unbounded payload. Used
+            // by BOTH the audit (names only, below) and the return.
+            const cookies =
+              requestData.op === "read_cookies" && Array.isArray(reply.cookies)
+                ? reply.cookies.slice(0, 300).flatMap((c: unknown): BrowserCookie[] => {
+                    if (!c || typeof c !== "object") return [];
+                    const cookie = c as Record<string, unknown>;
+                    if (typeof cookie.name !== "string") return [];
+                    return [
+                      {
+                        name: cookie.name.slice(0, 4_096),
+                        value: typeof cookie.value === "string" ? cookie.value.slice(0, 8_192) : "",
+                        domain: typeof cookie.domain === "string" ? cookie.domain.slice(0, 512) : "",
+                        path: typeof cookie.path === "string" ? cookie.path.slice(0, 2_048) : "",
+                        httpOnly: cookie.httpOnly === true,
+                        secure: cookie.secure === true,
+                        sameSite:
+                          typeof cookie.sameSite === "string"
+                            ? cookie.sameSite.slice(0, 32)
+                            : undefined,
+                        expires:
+                          typeof cookie.expires === "number" && cookie.expires > 0
+                            ? cookie.expires
+                            : undefined,
+                      },
+                    ];
+                  })
+                : undefined;
             // Audit every ACTION against the user's live session, plus the
-            // DELIBERATE reads (screenshot/read_text — the exfiltration
-            // surface an admin wants rows for). `snapshot` and `wait_for`
-            // are skipped: both fire between every step, so they would
-            // bury the rows that matter.
+            // DELIBERATE reads (screenshot/read_text/read_cookies — the
+            // exfiltration surface an admin wants rows for). `snapshot` and
+            // `wait_for` are skipped: both fire between every step, so they
+            // would bury the rows that matter. read_cookies logs the host +
+            // cookie NAMES + count only — NEVER a cookie value.
             // URLs are scrubbed of userinfo and query string — an audit row
             // is admin-visible and a query string routinely carries tokens.
             if (requestData.op !== "snapshot" && requestData.op !== "wait_for") {
@@ -2014,6 +2050,15 @@ export async function executeChatTurn(
                   // adding to it — the destructive half of the same op.
                   requestData.clear ? "clear" : "",
                   requestData.expand ? "expand" : "",
+                  // read_cookies: NAMES + count only. `cookies` above holds
+                  // `.value` too, but only `.name` is ever read here — a cookie
+                  // value must never reach an admin-visible audit row.
+                  requestData.op === "read_cookies" && cookies
+                    ? `cookies=${cookies.length} names=[${cookies
+                        .map((c) => c.name)
+                        .join(",")
+                        .slice(0, 400)}]`
+                    : "",
                   `url=${scrubAuditUrl(reply.url || requestData.url)}`,
                 ]
                   .filter(Boolean)
@@ -2162,6 +2207,10 @@ export async function executeChatTurn(
                           : reply.pageText.length,
                     }
                   : undefined,
+              // Already bounded + shape-validated above; the values are secrets
+              // and reach only the model context + conversation history, never a
+              // log or the audit row.
+              cookies,
             };
           },
           onFile: async (requestData) => {

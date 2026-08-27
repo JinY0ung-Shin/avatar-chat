@@ -45,3 +45,23 @@
   (`MAX_SHARED_SCREENSHOTS_PER_MESSAGE`) so a browsing loop can't exhaust the share_file cap; past it
   (or on publish failure) the MODEL still gets the image — only the user-facing card is skipped, and the
   note says so. Best-effort BY DESIGN: publish failure never fails the tool call.
+- **`read_cookies` crosses the boundary deliberately, so it is gated twice and audited by name.** It
+  returns the CURRENT tab origin's cookies — httpOnly session tokens included — as `BrowserResult.cookies`,
+  which land in the model context and conversation history (a decision taken with eyes open). The read is
+  un-bypassable from a server/headless/background path because the gate lives in the EXTENSION: a
+  per-site, per-session consent popup (`requestCookieConsent`, reusing the single-slot
+  `openConsentPopup`/`pendingConsent` machinery `new_tab` uses; the popup is `consent.html?kind=cookies`)
+  that the user must click 허용 on the FIRST read of each site per browser session. On approval the host is
+  remembered in `chrome.storage.session` (`COOKIE_GRANTS_KEY`), so further reads of the SAME site that
+  session skip the popup; the grant clears when the user revokes it (the options page lists granted hosts
+  with a 취소 / 모두 취소 path) or when the browser closes. A decline/timeout/close records nothing, and a
+  storage read error fails closed (re-prompts). It is NOT origin-exempt, so the current tab must ALSO pass
+  the origin allowlist first. Scope is the
+  current origin only: `Network.getCookies` is called with `urls:[tab.url]`, never `getAllCookies`. On the
+  CDP side it adds ONLY `Network.getCookies` — a command, not `Network.enable` (the event stream) —
+  probe-measured to need no enable (`tests/visual/cookie-facts.spec.ts`). Mitigations: the `routes/chat.ts`
+  audit row records host + cookie NAMES + count and NEVER a value; `chat.ts` bounds the cookie count and
+  every string (the primary size gate); and the tool result (`browserTools.reportCookies`, a DEDICATED
+  formatter, not `report`) prepends a strong SECRET banner and frames the page-derived cookie table as
+  untrusted. Cookie NAMES are page-controlled untrusted text; cookie VALUES are secrets and are the one
+  page-derived field never normalized (a normalized token is a useless one).

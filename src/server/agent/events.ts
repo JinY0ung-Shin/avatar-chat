@@ -300,6 +300,7 @@ export interface BrowserRequest {
     | "handle_dialog"
     | "wait_for"
     | "read_text"
+    | "read_cookies"
     | "screenshot"
     | "list_tabs"
     | "new_tab"
@@ -307,6 +308,8 @@ export interface BrowserRequest {
     | "close_tab";
   /** navigate/new_tab: absolute http(s) URL. */
   url?: string;
+  /** read_cookies only: return just this one cookie by name; omit for all cookies of the current tab's origin. */
+  name?: string;
   /**
    * Element uid minted by a previous snapshot. Required by click/type/hover,
    * optional on press_key/scroll/click_at (uid mode), and a SCOPE on
@@ -386,6 +389,24 @@ export interface BrowserTab {
   current: boolean;
 }
 
+/**
+ * One cookie of the CURRENTLY ATTACHED tab's origin, returned by `read_cookies`.
+ * `value` is a SECRET (a live session token when `httpOnly`); `name` is
+ * page-controlled and must be treated as untrusted text. Never audited or
+ * logged by value — only the name/count reach the audit row.
+ */
+export interface BrowserCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite?: string;
+  /** Unix seconds; omitted for a session cookie (CDP reports -1). */
+  expires?: number;
+}
+
 export type BrowserResult =
   | {
       behavior: "ok";
@@ -435,6 +456,12 @@ export type BrowserResult =
       landedOn?: string;
       /** read_text: one chunk of the page's readable text — UNTRUSTED page content. */
       pageText?: { text: string; offset: number; total: number };
+      /**
+       * read_cookies: the current tab origin's cookies — the user's LIVE
+       * session, incl. httpOnly. VALUES ARE SECRETS (session tokens); cookie
+       * NAMES are page-controlled untrusted text.
+       */
+      cookies?: BrowserCookie[];
     }
   | { behavior: "error"; message: string };
 

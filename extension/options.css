@@ -241,6 +241,53 @@ h1 {
   display: none;
 }
 
+/* The read_cookies consent-grants panel: a labeled list of hosts the user has
+   allowed cookie access for THIS browser session, each with its own 취소, and a
+   모두 취소 in the row below. Ghost buttons only — this page's one accent button
+   is 저장, and a second fill would compete with it. */
+.tool-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.grant-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.grant-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.grant-list .host {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.grant-list button {
+  flex: none;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.grant-empty {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .managed {
   background: var(--panel);
   border: 1px solid var(--line-soft);

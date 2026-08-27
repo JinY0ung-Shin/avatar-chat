@@ -60,6 +60,23 @@
           </p>
           <p class="status-line" id="uid-map-status" role="status" aria-live="polite"></p>
         </div>
+
+        <div class="tool">
+          <p class="tool-label">이 세션에 쿠키 접근을 허용한 사이트</p>
+          <ul id="cookie-grants" class="grant-list"></ul>
+          <p id="cookie-grants-empty" class="grant-empty" hidden>
+            이 세션에 쿠키 접근을 허용한 사이트가 없습니다.
+          </p>
+          <div class="actions">
+            <button id="cookie-grants-clear" type="button" class="secondary" hidden>모두 취소</button>
+          </div>
+          <p class="hint">
+            아바타가 <code>read_cookies</code>로 쿠키를 읽을 때, 사이트별로 한 번 허용하면 이 브라우저
+            세션 동안 같은 사이트는 다시 묻지 않습니다. 허용한 사이트는 브라우저를 닫으면 모두
+            사라지며, 세션 도중에 취소하려면 여기서 하면 됩니다.
+          </p>
+          <p class="status-line" id="cookie-grants-status" role="status" aria-live="polite"></p>
+        </div>
       </section>
 
       <aside class="caution">

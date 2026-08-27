@@ -1385,6 +1385,78 @@ describe("browser-bridge relay (onBrowser)", () => {
     expect(audit.detail).not.toContain("token=abc123");
   }, LIVE);
 
+  it("read_cookies relays, returns the cookies to the tool, and audits by NAME + count never value", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "bridgecookie").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    const results: BrowserResult[] = [];
+    H.impl = async (_req, _pr, config, _store, events) => {
+      results.push(await events.onBrowser!({ op: "read_cookies", name: "session" }));
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "ok" };
+    };
+
+    const { relayed } = await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-cookie", message: "쿠키" },
+      () => ({
+        ok: true,
+        // userinfo + query token must be scrubbed from the audit row.
+        url: "https://user:hunter2@intra.example.com/app?token=abc123",
+        title: "앱",
+        cookies: [
+          {
+            name: "session",
+            value: "httponly-secret-value",
+            domain: "intra.example.com",
+            path: "/",
+            httpOnly: true,
+            secure: true,
+            sameSite: "Lax",
+            expires: 1900000000,
+          },
+          { value: "no-name" }, // dropped: name must be a string
+        ],
+      }),
+    );
+
+    // The op — with its name filter — rode the wire.
+    expect(relayed).toHaveLength(1);
+    expect(relayed[0]).toMatchObject({ op: "read_cookies", name: "session" });
+
+    // The cookie VALUES come back to the tool (the accepted design), bounded and
+    // shape-validated (the nameless entry dropped).
+    const result = results[0];
+    expect(result.behavior).toBe("ok");
+    if (result.behavior !== "ok") return;
+    expect(result.cookies).toEqual([
+      {
+        name: "session",
+        value: "httponly-secret-value",
+        domain: "intra.example.com",
+        path: "/",
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+        expires: 1900000000,
+      },
+    ]);
+
+    // The audit row carries the host + cookie NAME + count, and NEVER a value.
+    const audit = store
+      .listAudit(ownerId, true)
+      .find((e) => e.action === "browser_read_cookies")!;
+    expect(audit.detail).toContain("cookies=1");
+    expect(audit.detail).toContain("names=[session]");
+    expect(audit.detail).toContain("url=https://intra.example.com/app");
+    expect(audit.detail).not.toContain("httponly-secret-value");
+    expect(audit.detail).not.toContain("hunter2");
+    expect(audit.detail).not.toContain("token=abc123");
+  }, LIVE);
+
   it("keeps snapshot/wait_for out of the audit trail and records unknown/unparseable urls", async () => {
     const { store, app } = boot();
     const owner = request.agent(app);
