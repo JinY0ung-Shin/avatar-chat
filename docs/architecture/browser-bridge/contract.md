@@ -49,12 +49,13 @@
   returns the CURRENT tab origin's cookies — httpOnly session tokens included — as `BrowserResult.cookies`,
   which land in the model context and conversation history (a decision taken with eyes open). The read is
   un-bypassable from a server/headless/background path because the gate lives in the EXTENSION: a
-  per-site, per-session consent popup (`requestCookieConsent`, reusing the single-slot
+  per-site, per-type, per-session consent popup (`requestDataConsent`, reusing the single-slot
   `openConsentPopup`/`pendingConsent` machinery `new_tab` uses; the popup is `consent.html?kind=cookies`)
-  that the user must click 허용 on the FIRST read of each site per browser session. On approval the host is
-  remembered in `chrome.storage.session` (`COOKIE_GRANTS_KEY`), so further reads of the SAME site that
-  session skip the popup; the grant clears when the user revokes it (the options page lists granted hosts
-  with a 취소 / 모두 취소 path) or when the browser closes. A decline/timeout/close records nothing, and a
+  that the user must click 허용 on the FIRST read of each site per browser session. On approval the (host,
+  type) is remembered in `chrome.storage.session` (`DATA_GRANTS_KEY` = `dataConsentGrants`, shape
+  `{host:{cookies?,local?,session?}}`), so further reads of the SAME site that session skip the popup; the
+  grant clears when the user revokes it (the options page lists granted hosts + their types with a 취소 /
+  모두 취소 path) or when the browser closes. A decline/timeout/close records nothing, and a
   storage read error fails closed (re-prompts). It is NOT origin-exempt, so the current tab must ALSO pass
   the origin allowlist first. Scope is the
   current origin only: `Network.getCookies` is called with `urls:[tab.url]`, never `getAllCookies`. On the
@@ -65,3 +66,16 @@
   formatter, not `report`) prepends a strong SECRET banner and frames the page-derived cookie table as
   untrusted. Cookie NAMES are page-controlled untrusted text; cookie VALUES are secrets and are the one
   page-derived field never normalized (a normalized token is a useless one).
+- **`read_storage` is `read_cookies`'s exact sibling for localStorage/sessionStorage** (`kind` picks the
+  store), sharing all of the above machinery. It returns the CURRENT tab origin's entries as
+  `BrowserResult.storage` (+ `storageKind`); localStorage commonly holds bearer/JWT tokens, so it is
+  credential-class and gets identical treatment. The CDP allowlist gains the SECOND `Network.*`-adjacent
+  read, `DOMStorage.getDOMStorageItems` — the `DOMStorage` domain, a command NOT the `DOMStorage.enable`
+  change-event stream — probe-measured to need no enable (`tests/visual/storage-facts.spec.ts`), called
+  with `storageId:{securityOrigin:<tab origin>, isLocalStorage}` (the `storageKey` variant fails "Frame not
+  found"). Consent is the SAME `requestDataConsent`, but per (host, STORAGE TYPE): approving sessionStorage
+  never approves cookies or localStorage — `consent.html?kind=local`/`kind=session` name the store. NOT
+  origin-exempt. Audited by KEY NAME + count + storageKind, never a value; the tool result
+  (`browserTools.reportStorage`, sibling of `reportCookies`, sharing `sanitizeSecretField` + `secretBanner`)
+  prepends the SECRET banner and frames the page-derived `storage_data` table as untrusted. Storage KEYS are
+  untrusted text; VALUES are secrets and never normalized.

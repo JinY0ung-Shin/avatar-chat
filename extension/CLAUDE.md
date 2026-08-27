@@ -32,9 +32,12 @@ Durable constraints for this layer:
   (updater.html/js/css) was removed in 0.9.0 because fetch-verify-write-reload is dropper-shaped — Windows
   Defender quarantined the shipped zip over it. Do NOT reintroduce `host_permissions` or any network call
   here. `CDP_ALLOWLIST` in `background.js` stays default-deny (no `Runtime.*`/`Storage.*`; of `Network.*`
-  ONLY the consent-gated, current-origin `Network.getCookies` behind `read_cookies` — the first read of a
-  site each browser session prompts a popup (approval remembered in `chrome.storage.session`, revocable in
-  the options page, cleared on browser close) and is audited by cookie NAME only).
+  ONLY the consent-gated, current-origin `Network.getCookies` behind `read_cookies`, plus the `DOMStorage`
+  domain's `DOMStorage.getDOMStorageItems` — NOT `DOMStorage.enable` — behind `read_storage`). Both reads
+  gate on ONE unified per-(host, data type) consent (`dataConsentGrants`): the first read of a site+type
+  each browser session prompts a popup (approving cookies never approves localStorage/sessionStorage, and
+  vice versa; approval remembered in `chrome.storage.session`, revocable in the options page, cleared on
+  browser close) and is audited by KEY NAME only.
 - **A browser op is a FIVE-layer hand-synced contract** (`agent/browserTools.ts` → `agent/events.ts` →
   `routes/chat.ts` relay → client `lib/browserBridge.ts` → `background.js perform()`); nothing type-checks
   across the gap, so a field missed in the middle arrives `undefined`. `chat.ts` is the PRIMARY size bound on

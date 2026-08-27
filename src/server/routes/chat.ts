@@ -29,7 +29,12 @@ import type {
   MessageAttachment,
   StoredMessage,
 } from "../types.js";
-import type { AgentEvents, BrowserCookie, BrowserTab } from "../agent/events.js";
+import type {
+  AgentEvents,
+  BrowserCookie,
+  BrowserStorageEntry,
+  BrowserTab,
+} from "../agent/events.js";
 import {
   formatSubmission,
   MAX_CANVAS_CONTENT_CHARS,
@@ -1901,6 +1906,7 @@ export async function executeChatTurn(
               op: requestData.op,
               url: requestData.url ?? null,
               name: requestData.name ?? null,
+              kind: requestData.kind ?? null,
               uid: requestData.uid ?? null,
               x: typeof requestData.x === "number" ? requestData.x : null,
               y: typeof requestData.y === "number" ? requestData.y : null,
@@ -1962,6 +1968,8 @@ export async function executeChatTurn(
               pageTextOffset?: number;
               pageTextTotal?: number;
               cookies?: BrowserCookie[];
+              storage?: BrowserStorageEntry[];
+              storageKind?: "local" | "session";
             };
             if (!reply?.ok) {
               const raw =
@@ -2008,6 +2016,36 @@ export async function executeChatTurn(
                       },
                     ];
                   })
+                : undefined;
+            // read_storage returns the CURRENT tab origin's localStorage or
+            // sessionStorage. Same treatment as cookies: this route is the
+            // primary size gate, the values are secrets and the keys are
+            // page-controlled untrusted text, and both ride into the model turn.
+            // Shape-validate each entry so a hostile/oversized reply can't
+            // smuggle an unbounded payload. Used by BOTH the audit (key NAMES
+            // only, below) and the return.
+            const storage =
+              requestData.op === "read_storage" && Array.isArray(reply.storage)
+                ? reply.storage.slice(0, 300).flatMap((e: unknown): BrowserStorageEntry[] => {
+                    if (!e || typeof e !== "object") return [];
+                    const entry = e as Record<string, unknown>;
+                    if (typeof entry.key !== "string") return [];
+                    return [
+                      {
+                        key: entry.key.slice(0, 4_096),
+                        value: typeof entry.value === "string" ? entry.value.slice(0, 8_192) : "",
+                      },
+                    ];
+                  })
+                : undefined;
+            // Which store was read — authoritative from what WE asked for (the
+            // extension keys its read off this exact value), normalized so a
+            // bad field can only ever read "session", never leak or throw.
+            const storageKind =
+              requestData.op === "read_storage"
+                ? requestData.kind === "local"
+                  ? "local"
+                  : "session"
                 : undefined;
             // Audit every ACTION against the user's live session, plus the
             // DELIBERATE reads (screenshot/read_text/read_cookies — the
@@ -2056,6 +2094,16 @@ export async function executeChatTurn(
                   requestData.op === "read_cookies" && cookies
                     ? `cookies=${cookies.length} names=[${cookies
                         .map((c) => c.name)
+                        .join(",")
+                        .slice(0, 400)}]`
+                    : "",
+                  // read_storage: storage kind + KEY NAMES + count only. Same
+                  // rule as cookies — `storage` holds `.value` too, but only
+                  // `.key` is ever read here; a stored value must never reach an
+                  // admin-visible audit row.
+                  requestData.op === "read_storage" && storage
+                    ? `storage=${storageKind} entries=${storage.length} keys=[${storage
+                        .map((e) => e.key)
                         .join(",")
                         .slice(0, 400)}]`
                     : "",
@@ -2211,6 +2259,11 @@ export async function executeChatTurn(
               // and reach only the model context + conversation history, never a
               // log or the audit row.
               cookies,
+              // Same posture as cookies: bounded + shape-validated above,
+              // secret values reach only the model turn + history, and
+              // storageKind is authoritative from the request.
+              storage,
+              storageKind,
             };
           },
           onFile: async (requestData) => {

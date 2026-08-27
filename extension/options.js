@@ -170,28 +170,33 @@ function renderVersion() {
   versionLine.textContent = parts.join(" · ");
 }
 
-// ------------------------------------------------------- cookie grants
+// --------------------------------------------------- site data grants
 //
-// read_cookies consent is per SITE, per browser SESSION: the first read of a
-// host prompts a popup, and background.js remembers an approved host in
-// chrome.storage.session so the SAME site does not re-prompt for the rest of the
-// session. This panel lists those remembered hosts and lets the user revoke one
-// (취소) or all of them (모두 취소) mid-session; they also clear on their own when
-// the browser closes. storage.session is a TRUSTED_CONTEXTS store and this page
-// is a trusted extension context, so it is read/written here directly — the same
-// way the allowlist above uses chrome.storage.local — with no setAccessLevel and
-// no message to the background worker. The key MUST match background.js.
-const COOKIE_GRANTS_KEY = "cookieConsentGrants";
+// read_cookies / read_storage consent is per SITE, per DATA TYPE, per browser
+// SESSION: the first read of a (host, type) prompts a popup, and background.js
+// remembers the approved (host, type) in chrome.storage.session so the SAME
+// site+type does not re-prompt for the rest of the session. This panel lists
+// those remembered hosts — with which data types each has granted (쿠키 /
+// localStorage / sessionStorage) — and lets the user revoke a whole host (취소,
+// all its types) or all of them (모두 취소) mid-session; they also clear on their
+// own when the browser closes. storage.session is a TRUSTED_CONTEXTS store and
+// this page is a trusted extension context, so it is read/written here directly
+// — the same way the allowlist above uses chrome.storage.local — with no
+// setAccessLevel and no message to the background worker. The key MUST match
+// background.js.
+const DATA_GRANTS_KEY = "dataConsentGrants";
+// Display order + label for each data type; the keys match background.js.
+const DATA_TYPE_LABELS = { cookies: "쿠키", local: "localStorage", session: "sessionStorage" };
 
-const cookieGrantsList = document.getElementById("cookie-grants");
-const cookieGrantsEmpty = document.getElementById("cookie-grants-empty");
-const cookieGrantsClear = document.getElementById("cookie-grants-clear");
-const cookieGrantsStatus = document.getElementById("cookie-grants-status");
+const dataGrantsList = document.getElementById("data-grants");
+const dataGrantsEmpty = document.getElementById("data-grants-empty");
+const dataGrantsClear = document.getElementById("data-grants-clear");
+const dataGrantsStatus = document.getElementById("data-grants-status");
 
-async function readCookieGrants() {
+async function readDataGrants() {
   try {
-    const stored = await chrome.storage.session.get(COOKIE_GRANTS_KEY);
-    const grants = stored?.[COOKIE_GRANTS_KEY];
+    const stored = await chrome.storage.session.get(DATA_GRANTS_KEY);
+    const grants = stored?.[DATA_GRANTS_KEY];
     return grants && typeof grants === "object" ? grants : {};
   } catch {
     // Unreadable session store (unusual on a trusted page): show the empty
@@ -200,73 +205,88 @@ async function readCookieGrants() {
   }
 }
 
-async function revokeCookieGrant(host) {
-  const grants = await readCookieGrants();
+// Which data types a host has an ACTIVE grant for, in display order. A
+// non-object / legacy per-host value yields none, so it drops from the list.
+function grantedTypes(entry) {
+  if (!entry || typeof entry !== "object") return [];
+  return ["cookies", "local", "session"].filter((type) => entry[type] === true);
+}
+
+async function revokeDataGrant(host) {
+  const grants = await readDataGrants();
   delete grants[host];
   try {
     // Drop the key entirely once the last host is gone, so an empty object never
     // lingers in the session store.
     if (Object.keys(grants).length) {
-      await chrome.storage.session.set({ [COOKIE_GRANTS_KEY]: grants });
+      await chrome.storage.session.set({ [DATA_GRANTS_KEY]: grants });
     } else {
-      await chrome.storage.session.remove(COOKIE_GRANTS_KEY);
+      await chrome.storage.session.remove(DATA_GRANTS_KEY);
     }
-    cookieGrantsStatus.textContent = `${host} 접근을 취소했습니다.`;
+    dataGrantsStatus.textContent = `${host} 접근을 취소했습니다.`;
   } catch {
-    cookieGrantsStatus.textContent = "취소하지 못했습니다. 다시 시도하세요.";
+    dataGrantsStatus.textContent = "취소하지 못했습니다. 다시 시도하세요.";
   }
-  await renderCookieGrants();
+  await renderDataGrants();
 }
 
-async function clearCookieGrants() {
+async function clearDataGrants() {
   try {
-    await chrome.storage.session.remove(COOKIE_GRANTS_KEY);
-    cookieGrantsStatus.textContent = "허용한 사이트를 모두 취소했습니다.";
+    await chrome.storage.session.remove(DATA_GRANTS_KEY);
+    dataGrantsStatus.textContent = "허용한 사이트를 모두 취소했습니다.";
   } catch {
-    cookieGrantsStatus.textContent = "취소하지 못했습니다. 다시 시도하세요.";
+    dataGrantsStatus.textContent = "취소하지 못했습니다. 다시 시도하세요.";
   }
-  await renderCookieGrants();
+  await renderDataGrants();
 }
 
-async function renderCookieGrants() {
-  const grants = await readCookieGrants();
+async function renderDataGrants() {
+  const grants = await readDataGrants();
   const hosts = Object.keys(grants)
-    .filter((host) => grants[host] === true)
+    .filter((host) => grantedTypes(grants[host]).length)
     .sort();
-  cookieGrantsList.textContent = "";
+  dataGrantsList.textContent = "";
   if (!hosts.length) {
-    cookieGrantsEmpty.hidden = false;
-    cookieGrantsClear.hidden = true;
+    dataGrantsEmpty.hidden = false;
+    dataGrantsClear.hidden = true;
     return;
   }
-  cookieGrantsEmpty.hidden = true;
-  cookieGrantsClear.hidden = false;
+  dataGrantsEmpty.hidden = true;
+  dataGrantsClear.hidden = false;
   for (const host of hosts) {
     const li = document.createElement("li");
+    const info = document.createElement("div");
+    info.className = "grant-info";
     // The host is a hostname the user already approved; render it as TEXT,
     // never markup, consistent with how the consent popup shows it.
     const name = document.createElement("span");
     name.className = "host";
     name.textContent = host;
+    const types = document.createElement("span");
+    types.className = "grant-types";
+    types.textContent = grantedTypes(grants[host])
+      .map((type) => DATA_TYPE_LABELS[type])
+      .join(" · ");
+    info.append(name, types);
     const revoke = document.createElement("button");
     revoke.type = "button";
     revoke.className = "secondary";
     revoke.textContent = "취소";
-    revoke.addEventListener("click", () => void revokeCookieGrant(host));
-    li.append(name, revoke);
-    cookieGrantsList.appendChild(li);
+    revoke.addEventListener("click", () => void revokeDataGrant(host));
+    li.append(info, revoke);
+    dataGrantsList.appendChild(li);
   }
 }
 
-cookieGrantsClear.addEventListener("click", () => void clearCookieGrants());
+dataGrantsClear.addEventListener("click", () => void clearDataGrants());
 
-// Cheap live refresh: a grant added by a read_cookies approval, or revoked in
-// another view, re-renders this list without a manual reload.
+// Cheap live refresh: a grant added by a read_cookies / read_storage approval,
+// or revoked in another view, re-renders this list without a manual reload.
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "session" && changes[COOKIE_GRANTS_KEY]) void renderCookieGrants();
+  if (area === "session" && changes[DATA_GRANTS_KEY]) void renderDataGrants();
 });
 
 renderVersion();
 void init();
 void initHighlight();
-void renderCookieGrants();
+void renderDataGrants();

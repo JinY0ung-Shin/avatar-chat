@@ -1457,6 +1457,61 @@ describe("browser-bridge relay (onBrowser)", () => {
     expect(audit.detail).not.toContain("token=abc123");
   }, LIVE);
 
+  it("read_storage relays kind, returns entries to the tool, and audits by KEY + count never value", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "bridgestorage").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    const results: BrowserResult[] = [];
+    H.impl = async (_req, _pr, config, _store, events) => {
+      results.push(await events.onBrowser!({ op: "read_storage", kind: "local", name: "auth" }));
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "ok" };
+    };
+
+    const { relayed } = await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-storage", message: "저장소" },
+      () => ({
+        ok: true,
+        // userinfo + query token must be scrubbed from the audit row.
+        url: "https://user:hunter2@intra.example.com/app?token=abc123",
+        title: "앱",
+        storageKind: "local",
+        storage: [
+          { key: "auth", value: "jwt-secret-value" },
+          { value: "no-key" }, // dropped: key must be a string
+        ],
+      }),
+    );
+
+    // The op — with its kind + name filter — rode the wire.
+    expect(relayed).toHaveLength(1);
+    expect(relayed[0]).toMatchObject({ op: "read_storage", kind: "local", name: "auth" });
+
+    // The entry VALUES come back to the tool (the accepted design), bounded and
+    // shape-validated (the keyless entry dropped).
+    const result = results[0];
+    expect(result.behavior).toBe("ok");
+    if (result.behavior !== "ok") return;
+    expect(result.storageKind).toBe("local");
+    expect(result.storage).toEqual([{ key: "auth", value: "jwt-secret-value" }]);
+
+    // The audit row carries the storage kind + entry KEY + count, NEVER a value.
+    const audit = store
+      .listAudit(ownerId, true)
+      .find((e) => e.action === "browser_read_storage")!;
+    expect(audit.detail).toContain("storage=local");
+    expect(audit.detail).toContain("entries=1");
+    expect(audit.detail).toContain("keys=[auth]");
+    expect(audit.detail).toContain("url=https://intra.example.com/app");
+    expect(audit.detail).not.toContain("jwt-secret-value");
+    expect(audit.detail).not.toContain("hunter2");
+    expect(audit.detail).not.toContain("token=abc123");
+  }, LIVE);
+
   it("keeps snapshot/wait_for out of the audit trail and records unknown/unparseable urls", async () => {
     const { store, app } = boot();
     const owner = request.agent(app);

@@ -301,6 +301,7 @@ export interface BrowserRequest {
     | "wait_for"
     | "read_text"
     | "read_cookies"
+    | "read_storage"
     | "screenshot"
     | "list_tabs"
     | "new_tab"
@@ -308,8 +309,14 @@ export interface BrowserRequest {
     | "close_tab";
   /** navigate/new_tab: absolute http(s) URL. */
   url?: string;
-  /** read_cookies only: return just this one cookie by name; omit for all cookies of the current tab's origin. */
+  /**
+   * read_cookies: return just this one cookie by name (omit for all).
+   * read_storage: return just this one entry by key (omit for all). Reused
+   * across both — the field is a single name filter either way.
+   */
   name?: string;
+  /** read_storage only: which store to read — localStorage vs sessionStorage. */
+  kind?: "local" | "session";
   /**
    * Element uid minted by a previous snapshot. Required by click/type/hover,
    * optional on press_key/scroll/click_at (uid mode), and a SCOPE on
@@ -407,6 +414,18 @@ export interface BrowserCookie {
   expires?: number;
 }
 
+/**
+ * One localStorage / sessionStorage entry of the CURRENTLY ATTACHED tab's
+ * origin, returned by `read_storage`. `value` is a SECRET (localStorage
+ * commonly holds bearer/JWT tokens); `key` is page-controlled and must be
+ * treated as untrusted text. Never audited or logged by value — only the
+ * key/count reach the audit row.
+ */
+export interface BrowserStorageEntry {
+  key: string;
+  value: string;
+}
+
 export type BrowserResult =
   | {
       behavior: "ok";
@@ -462,6 +481,15 @@ export type BrowserResult =
        * NAMES are page-controlled untrusted text.
        */
       cookies?: BrowserCookie[];
+      /**
+       * read_storage: the current tab origin's localStorage or sessionStorage
+       * (which one is in `storageKind`). VALUES ARE SECRETS (localStorage
+       * commonly holds bearer/JWT tokens); entry KEYS are page-controlled
+       * untrusted text.
+       */
+      storage?: BrowserStorageEntry[];
+      /** read_storage: which store the `storage` entries came from. */
+      storageKind?: "local" | "session";
     }
   | { behavior: "error"; message: string };
 

@@ -52,6 +52,15 @@ export interface BridgeReply {
     sameSite?: string;
     expires?: number;
   }[];
+  /**
+   * read_storage: the current tab origin's localStorage/sessionStorage entries.
+   * VALUES ARE SECRETS (localStorage commonly holds bearer/JWT tokens) — the
+   * client only relays this reply straight back to the server, never rendering
+   * it. Mirrors server BrowserStorageEntry.
+   */
+  storage?: { key: string; value: string }[];
+  /** read_storage: which store the entries came from. */
+  storageKind?: "local" | "session";
 }
 
 export interface BridgeOperation {
@@ -78,14 +87,17 @@ export interface BridgeOperation {
     | "wait_for"
     | "read_text"
     | "read_cookies"
+    | "read_storage"
     | "screenshot"
     | "list_tabs"
     | "new_tab"
     | "select_tab"
     | "close_tab";
   url?: string | null;
-  /** read_cookies only: return just this one cookie by name. */
+  /** read_cookies: one cookie by name; read_storage: one entry by key (else all). */
   name?: string | null;
+  /** read_storage only: which store to read — localStorage vs sessionStorage. */
+  kind?: "local" | "session" | null;
   uid?: string | null;
   /** click_at/drag pixel mode: coordinates on the most recent viewport screenshot. */
   x?: number | null;

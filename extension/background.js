@@ -92,11 +92,24 @@ const CDP_VERSION = "1.3";
  * read) stays OFF the list, the DOMSnapshot.enable rule once more. read_cookies
  * calls it with `urls:[tab.url]`, so ONLY the current tab's origin is ever read
  * (never a cross-site cookie), and it runs ONLY after the user approves a
- * per-site, per-session popup in their own browser (requestCookieConsent — the
+ * per-site, per-session popup in their own browser (requestDataConsent — the
  * first read of a site each browser session prompts; an approval is remembered
  * until the user revokes it or the browser closes). What it returns is
  * the user's live session tokens — the reason for both the consent gate and the
  * audit that logs cookie NAMES only, never values.
+ *
+ * `DOMStorage.getDOMStorageItems` is the SECOND such method, added for
+ * read_storage, and the same reasoning holds: it is a COMMAND that reads one
+ * origin's localStorage or sessionStorage for a given storageId, NOT an event
+ * subscription — probe-measured (`tests/visual/storage-facts.spec.ts`) to answer
+ * with only DOM/Page enabled, so `DOMStorage.enable` (the change-event stream)
+ * stays OFF the list, the DOMSnapshot.enable rule once more. read_storage passes
+ * `storageId:{ securityOrigin: <tab origin>, isLocalStorage }`, so ONLY the
+ * current tab's origin is ever read, and it runs ONLY after the user approves a
+ * per-site, PER-STORAGE-TYPE, per-session popup (requestDataConsent again). What
+ * it returns is credential-class data (localStorage routinely holds bearer/JWT
+ * tokens) — the reason for both the consent gate and the audit that logs entry
+ * KEY names only, never values.
  */
 const CDP_ALLOWLIST = new Set([
   "Accessibility.enable",
@@ -112,6 +125,7 @@ const CDP_ALLOWLIST = new Set([
   "DOM.focus",
   "DOM.scrollIntoViewIfNeeded",
   "DOMSnapshot.captureSnapshot",
+  "DOMStorage.getDOMStorageItems",
   "Input.dispatchKeyEvent",
   "Input.dispatchMouseEvent",
   "Input.imeSetComposition",
@@ -819,6 +833,13 @@ const COOKIE_CONSENT_UNANSWERED =
   "The user did not answer the cookie-access prompt in time, so no cookies were read. " +
   "Tell the user a confirmation popup appears in their browser when you read cookies, and retry when they are ready.";
 
+const STORAGE_CONSENT_DECLINED =
+  "The user declined to share this site's browser storage, so no storage was read. " +
+  "Do not retry — tell the user which site's storage you wanted and why, and let them decide.";
+const STORAGE_CONSENT_UNANSWERED =
+  "The user did not answer the storage-access prompt in time, so no storage was read. " +
+  "Tell the user a confirmation popup appears in their browser when you read storage, and retry when they are ready.";
+
 let consentSeq = 0;
 /** The single in-flight consent: { token, windowId, timer, settle, declinedReason }. */
 let pendingConsent = null;
@@ -890,19 +911,46 @@ async function requestGroupConsent(url) {
 }
 
 /**
- * Per-site, per-browser-session cookie-consent grants. Once the user approves
- * reading a site's cookies, that hostname is remembered here so the SAME site
- * does not re-prompt for the rest of the session. storage.session (not local) is
- * the deliberate store: it clears when the browser closes — exactly this grant's
- * lifetime — and it survives the MV3 worker idling out between turns. Shape:
- * { [hostname]: true }.
+ * Per-site, per-browser-session, PER-DATA-TYPE consent grants. Once the user
+ * approves reading a site's cookies / localStorage / sessionStorage, that exact
+ * (hostname, type) pair is remembered here so the SAME site+type does not
+ * re-prompt for the rest of the session — approving one type NEVER approves
+ * another (sessionStorage consent leaves cookies and localStorage still gated).
+ * storage.session (not local) is the deliberate store: it clears when the
+ * browser closes — exactly this grant's lifetime — and it survives the MV3
+ * worker idling out between turns. Shape:
+ * { [hostname]: { cookies?: true, local?: true, session?: true } }.
  */
-const COOKIE_GRANTS_KEY = "cookieConsentGrants";
+const DATA_GRANTS_KEY = "dataConsentGrants";
 
-async function readCookieGrants() {
+/** Type ∈ "cookies" | "local" | "session" — the popup query + consent copy per data type. */
+const STORAGE_OPEN_FAILED = (error) =>
+  `The storage-consent popup could not be opened (${String(error?.message || error)}), so no storage was read. ` +
+  "Report this to the user rather than retrying.";
+const DATA_CONSENT_COPY = {
+  cookies: {
+    declined: COOKIE_CONSENT_DECLINED,
+    unanswered: COOKIE_CONSENT_UNANSWERED,
+    openFailed: (error) =>
+      `The cookie-consent popup could not be opened (${String(error?.message || error)}), so no cookies were read. ` +
+      "Report this to the user rather than retrying.",
+  },
+  local: {
+    declined: STORAGE_CONSENT_DECLINED,
+    unanswered: STORAGE_CONSENT_UNANSWERED,
+    openFailed: STORAGE_OPEN_FAILED,
+  },
+  session: {
+    declined: STORAGE_CONSENT_DECLINED,
+    unanswered: STORAGE_CONSENT_UNANSWERED,
+    openFailed: STORAGE_OPEN_FAILED,
+  },
+};
+
+async function readDataGrants() {
   try {
-    const stored = await chrome.storage.session.get(COOKIE_GRANTS_KEY);
-    const grants = stored?.[COOKIE_GRANTS_KEY];
+    const stored = await chrome.storage.session.get(DATA_GRANTS_KEY);
+    const grants = stored?.[DATA_GRANTS_KEY];
     return grants && typeof grants === "object" ? grants : {};
   } catch {
     // FAIL CLOSED: a read error must not auto-grant. Returning {} means the
@@ -911,11 +959,13 @@ async function readCookieGrants() {
   }
 }
 
-async function rememberCookieGrant(host) {
+async function rememberDataGrant(host, type) {
   try {
-    const grants = await readCookieGrants();
-    grants[host] = true;
-    await chrome.storage.session.set({ [COOKIE_GRANTS_KEY]: grants });
+    const grants = await readDataGrants();
+    const forHost = grants[host] && typeof grants[host] === "object" ? grants[host] : {};
+    forHost[type] = true;
+    grants[host] = forHost;
+    await chrome.storage.session.set({ [DATA_GRANTS_KEY]: grants });
   } catch {
     // A write failure costs only the MEMORY, never the read: the caller still
     // returns granted for this approval, and the next read simply re-prompts.
@@ -923,34 +973,35 @@ async function rememberCookieGrant(host) {
 }
 
 /**
- * Ask the user, in extension UI, whether to hand THIS tab's cookies (including
- * httpOnly session tokens) to the avatar. Consent is per SITE, per browser
- * SESSION: the first read of a host prompts, and once approved that host is
- * remembered (readCookieGrants / rememberCookieGrant) so further reads of the
- * SAME host skip the popup until the user revokes it or the browser closes. Still
- * the un-bypassable gate that stops a server / headless / background path from
- * reading cookies without the user's live approval — a background run reaches
- * neither the popup nor a grant it never made.
+ * Ask the user, in extension UI, whether to hand THIS tab's data of the given
+ * `type` (cookies incl. httpOnly session tokens, or localStorage/sessionStorage
+ * incl. bearer/JWT tokens) to the avatar. Consent is per SITE, per DATA TYPE,
+ * per browser SESSION: the first read of a (host, type) prompts, and once
+ * approved that exact pair is remembered (readDataGrants / rememberDataGrant) so
+ * further reads of the SAME site+type skip the popup until the user revokes it
+ * or the browser closes. Still the un-bypassable gate that stops a server /
+ * headless / background path from reading this data without the user's live
+ * approval — a background run reaches neither the popup nor a grant it never made.
  */
-async function requestCookieConsent(host) {
-  // Already approved this site this session → honor it with no popup. A read
-  // error in readCookieGrants fails closed (returns {}), so we fall through to
-  // the popup rather than auto-granting.
-  const grants = await readCookieGrants();
-  if (grants[host] === true) return { granted: true };
+async function requestDataConsent(host, type) {
+  const copy = DATA_CONSENT_COPY[type] || DATA_CONSENT_COPY.cookies;
+  // Already approved this (site, type) this session → honor it with no popup.
+  // A read error in readDataGrants fails closed (returns {}), so we fall through
+  // to the popup rather than auto-granting; a legacy/non-object per-host value
+  // likewise fails the STRICT === true check and re-prompts.
+  const grants = await readDataGrants();
+  if (grants[host]?.[type] === true) return { granted: true };
   const outcome = await openConsentPopup({
-    query: `kind=cookies&host=${encodeURIComponent(host)}`,
+    query: `kind=${type}&host=${encodeURIComponent(host)}`,
     alreadyOpenReason:
       "A confirmation popup is already open in the user's browser. Wait for their answer instead of retrying.",
-    openFailedReason: (error) =>
-      `The cookie-consent popup could not be opened (${String(error?.message || error)}), so no cookies were read. ` +
-      "Report this to the user rather than retrying.",
-    declinedReason: COOKIE_CONSENT_DECLINED,
-    unansweredReason: COOKIE_CONSENT_UNANSWERED,
+    openFailedReason: copy.openFailed,
+    declinedReason: copy.declined,
+    unansweredReason: copy.unanswered,
   });
   // Remember ONLY a real approval; a decline / timeout / close records nothing,
-  // so the next read of this host prompts again.
-  if (outcome.granted) await rememberCookieGrant(host);
+  // so the next read of this (site, type) prompts again.
+  if (outcome.granted) await rememberDataGrant(host, type);
   return outcome;
 }
 
@@ -4741,18 +4792,18 @@ async function performOp(message, stagingOrigin) {
 
   if (message.op === "read_cookies") {
     // Consent per site, per browser session, in the user's own browser UI — the
-    // un-bypassable gate (requestCookieConsent prompts on the FIRST read of a
-    // host and remembers an approval for the session). The current tab already
-    // passed the origin allowlist above (read_cookies is NOT origin-exempt and
-    // the debugger is attached), so this only ever prompts for a site the
-    // operator already permits.
+    // un-bypassable gate (requestDataConsent prompts on the FIRST read of a
+    // (host, "cookies") and remembers an approval for the session). The current
+    // tab already passed the origin allowlist above (read_cookies is NOT
+    // origin-exempt and the debugger is attached), so this only ever prompts for
+    // a site the operator already permits.
     let host = "";
     try {
       host = new URL(tab.url || "").hostname;
     } catch {
       // Unparseable tab URL: fall back to the raw string for the popup.
     }
-    const consent = await requestCookieConsent(host || tab.url || "");
+    const consent = await requestDataConsent(host || tab.url || "", "cookies");
     if (!consent.granted) return { ok: false, message: consent.reason };
     let raw;
     try {
@@ -4786,6 +4837,62 @@ async function performOp(message, stagingOrigin) {
     return {
       ok: true,
       cookies,
+      url: tab.url || "",
+      title: tab.title || "",
+      tabs: (await groupedTabs()).map(describeTab),
+    };
+  }
+
+  if (message.op === "read_storage") {
+    // Consent per site, PER STORAGE TYPE, per browser session, in the user's own
+    // browser UI — the un-bypassable gate (requestDataConsent prompts on the
+    // FIRST read of a (host, type) and remembers an approval for the session).
+    // read_storage is NOT origin-exempt, so the current tab already passed the
+    // origin allowlist above; this only ever prompts for a site the operator
+    // already permits. localStorage routinely holds bearer/JWT tokens, so it
+    // gets the SAME treatment as cookies.
+    let host = "";
+    let origin = "";
+    try {
+      const parsed = new URL(tab.url || "");
+      host = parsed.hostname;
+      origin = parsed.origin;
+    } catch {
+      // Unparseable tab URL: fall back to the raw string for the popup; the
+      // read below then fails closed on the empty origin rather than guessing.
+    }
+    const type = message.kind === "local" ? "local" : "session";
+    const consent = await requestDataConsent(host || tab.url || "", type);
+    if (!consent.granted) return { ok: false, message: consent.reason };
+    let entries;
+    try {
+      // Scoped to the CURRENT tab's origin ONLY — never another site's storage.
+      // getDOMStorageItems is a command, not an event subscription, so it needs
+      // no DOMStorage.enable (see the CDP_ALLOWLIST rationale). isLocalStorage
+      // picks localStorage (true) vs sessionStorage (false); the storageKey
+      // variant fails "Frame not found", so securityOrigin is used (CDP marks it
+      // deprecated, but it is the one that works).
+      ({ entries } = await sendCdp({ tabId: tab.id }, "DOMStorage.getDOMStorageItems", {
+        storageId: { securityOrigin: origin, isLocalStorage: type === "local" },
+      }));
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Could not read the tab's ${type === "local" ? "localStorage" : "sessionStorage"}: ${String(error?.message || error)}`,
+      };
+    }
+    // getDOMStorageItems answers with entries as [key, value] pairs.
+    let storage = (Array.isArray(entries) ? entries : []).map((pair) => ({
+      key: String(pair?.[0] ?? ""),
+      value: String(pair?.[1] ?? ""),
+    }));
+    if (message.name) {
+      storage = storage.filter((entry) => entry.key === message.name);
+    }
+    return {
+      ok: true,
+      storage,
+      storageKind: type,
       url: tab.url || "",
       title: tab.title || "",
       tabs: (await groupedTabs()).map(describeTab),

@@ -96,16 +96,20 @@ These are the invariants the project is built around. New work should reinforce 
   `extension/background.js`) plus BOTH metacognition surfaces; nothing type-checks across the gap, so a
   field missed in the middle arrives `undefined`. The security boundary is the extension's default-deny
   `CDP_ALLOWLIST` (still no `Runtime.*`/`Storage.*`; of `Network.*` ONLY the consent-gated, current-origin
-  `Network.getCookies` behind `read_cookies`), NOT the permission manifest — elements are
+  `Network.getCookies` behind `read_cookies`, plus the `DOMStorage` domain's `DOMStorage.getDOMStorageItems`
+  — NOT `DOMStorage.enable` — behind `read_storage`), NOT the permission manifest — elements are
   addressed by `backendNodeId` (plus screenshot-pixel `click_at` as the deliberate escape hatch for
   AX-invisible targets), so an op that cannot be executed directly must be driven the way a
   PERSON would AND re-read what it landed on instead of assuming success. `read_cookies` returns the
-  user's LIVE session cookies (httpOnly included), so it is gated PER SITE, PER BROWSER SESSION by a popup
-  the user must approve IN THE EXTENSION (the first read of a site each session prompts; the grant is
-  remembered in `chrome.storage.session`, revocable in the extension options, and cleared when the browser
-  closes) — un-bypassable from server/headless — and audited by cookie NAME + count only,
-  never value; the tool result carries a secret-handling banner. Everything the page returns
-  (snapshot text, `read_text` chunks, screenshot pixels, cookie names) is UNTRUSTED input. Mechanics →
+  user's LIVE session cookies (httpOnly included) and `read_storage` the CURRENT tab's localStorage/
+  sessionStorage (bearer/JWT tokens included), so BOTH are gated PER SITE, PER BROWSER SESSION by a popup
+  the user must approve IN THE EXTENSION (`read_storage` additionally PER STORAGE TYPE — one unified
+  `dataConsentGrants` store keyed `{host:{cookies?,local?,session?}}`, so approving one type never approves
+  another; the first read of a site+type prompts; the grant is remembered in `chrome.storage.session`,
+  revocable in the extension options, and cleared when the browser closes) — un-bypassable from
+  server/headless — and audited by KEY NAME + count only, never value; the tool result carries a
+  secret-handling banner. Everything the page returns
+  (snapshot text, `read_text` chunks, screenshot pixels, cookie/storage keys) is UNTRUSTED input. Mechanics →
   `docs/architecture/browser-bridge.md` (its own 5-page hub — start with `contract.md`).
 - **A server-held third-party credential stays READ-ONLY; the WRITE path is the user's own browser.**
   The Confluence tools read only, enforced STRUCTURALLY — `requestJson` has no `method`/`body` option,
