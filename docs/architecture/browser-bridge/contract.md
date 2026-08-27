@@ -66,16 +66,24 @@
   formatter, not `report`) prepends a strong SECRET banner and frames the page-derived cookie table as
   untrusted. Cookie NAMES are page-controlled untrusted text; cookie VALUES are secrets and are the one
   page-derived field never normalized (a normalized token is a useless one).
-- **`read_storage` is `read_cookies`'s exact sibling for localStorage/sessionStorage** (`kind` picks the
-  store), sharing all of the above machinery. It returns the CURRENT tab origin's entries as
-  `BrowserResult.storage` (+ `storageKind`); localStorage commonly holds bearer/JWT tokens, so it is
-  credential-class and gets identical treatment. The CDP allowlist gains the SECOND `Network.*`-adjacent
-  read, `DOMStorage.getDOMStorageItems` — the `DOMStorage` domain, a command NOT the `DOMStorage.enable`
-  change-event stream — probe-measured to need no enable (`tests/visual/storage-facts.spec.ts`), called
-  with `storageId:{securityOrigin:<tab origin>, isLocalStorage}` (the `storageKey` variant fails "Frame not
-  found"). Consent is the SAME `requestDataConsent`, but per (host, STORAGE TYPE): approving sessionStorage
-  never approves cookies or localStorage — `consent.html?kind=local`/`kind=session` name the store. NOT
-  origin-exempt. Audited by KEY NAME + count + storageKind, never a value; the tool result
-  (`browserTools.reportStorage`, sibling of `reportCookies`, sharing `sanitizeSecretField` + `secretBanner`)
-  prepends the SECRET banner and frames the page-derived `storage_data` table as untrusted. Storage KEYS are
-  untrusted text; VALUES are secrets and never normalized.
+- **`read_storage` is `read_cookies`'s sibling for localStorage/sessionStorage** (`kind` picks the store),
+  sharing all of the above machinery EXCEPT the read primitive. It returns the CURRENT tab origin's entries
+  as `BrowserResult.storage` (+ `storageKind`); localStorage commonly holds bearer/JWT tokens, so it is
+  credential-class and gets identical treatment. The read is the ONE exception to the extension's no-page-JS
+  invariant: `DOMStorage.getDOMStorageItems` is UNREACHABLE over `chrome.debugger` — the `DOMStorage` domain
+  is excluded from the domain allowlist `chrome.debugger` exposes, so the call rejects with `-32601` "wasn't
+  found". **Transport lesson, pinned here so it is not repeated:** the `chrome.debugger.sendCommand` allowlist
+  is NARROWER than raw CDP. An earlier probe validated `DOMStorage` over Playwright's `newCDPSession` — raw
+  CDP, a different and more permissive transport — so it never exercised the real path and wrongly cleared the
+  method; pin Chrome facts on the transport the extension actually uses (`chrome.debugger`), not raw CDP. So
+  the CDP allowlist gains `Runtime.evaluate` instead — the only `Runtime.*` method, NOT `Runtime.enable` (no
+  enable needed, exactly as `Network.getCookies` needs none) — and read_storage evaluates a FIXED,
+  bridge-authored expression (one of two constants, chosen by the validated `kind`; `returnByValue`, current
+  tab only, no page mutation) that reads the store and returns a JSON string. `message.name`/`kind` and the
+  tab URL NEVER enter the expression; the `name` filter is applied in the EXTENSION on the parsed result, and
+  every parse failure / `exceptionDetails` fails closed. Consent is the SAME `requestDataConsent`, but per
+  (host, STORAGE TYPE): approving sessionStorage never approves cookies or localStorage —
+  `consent.html?kind=local`/`kind=session` name the store. NOT origin-exempt. Audited by KEY NAME + count +
+  storageKind, never a value; the tool result (`browserTools.reportStorage`, sibling of `reportCookies`,
+  sharing `sanitizeSecretField` + `secretBanner`) prepends the SECRET banner and frames the page-derived
+  `storage_data` table as untrusted. Storage KEYS are untrusted text; VALUES are secrets and never normalized.

@@ -90,19 +90,23 @@ These are the invariants the project is built around. New work should reinforce 
   an in-process MCP bridge (`mcp__repo__*`/`mcp__git_repo__*`/`mcp__group_repo__*`) and keep the
   no-Bash-fallback line in its error text. Per-user git tokens are used server-side only, never reach the
   agent.
-- **Browser control is a RELAY into the user's own browser, and the extension NEVER runs page JS.** An
+- **Browser control is a RELAY into the user's own browser, and the extension runs no page JS EXCEPT one
+  fixed bridge-authored expression for `read_storage`.** An
   `mcp__browser__*` op is a wire contract crossing FIVE hand-synced layers (`agent/browserTools.ts` →
   `agent/events.ts` → `routes/chat.ts` relay+audit → client `lib/browserBridge.ts` →
   `extension/background.js`) plus BOTH metacognition surfaces; nothing type-checks across the gap, so a
   field missed in the middle arrives `undefined`. The security boundary is the extension's default-deny
-  `CDP_ALLOWLIST` (still no `Runtime.*`/`Storage.*`; of `Network.*` ONLY the consent-gated, current-origin
-  `Network.getCookies` behind `read_cookies`, plus the `DOMStorage` domain's `DOMStorage.getDOMStorageItems`
-  — NOT `DOMStorage.enable` — behind `read_storage`), NOT the permission manifest — elements are
+  `CDP_ALLOWLIST` (no `Storage.*`; of `Runtime.*` ONLY the single `Runtime.evaluate` behind `read_storage`
+  — the ONE fixed bridge-authored page-JS exception, NOT `Runtime.enable`; of `Network.*` ONLY the
+  consent-gated, current-origin `Network.getCookies` behind `read_cookies`), NOT the permission manifest —
+  elements are
   addressed by `backendNodeId` (plus screenshot-pixel `click_at` as the deliberate escape hatch for
   AX-invisible targets), so an op that cannot be executed directly must be driven the way a
   PERSON would AND re-read what it landed on instead of assuming success. `read_cookies` returns the
   user's LIVE session cookies (httpOnly included) and `read_storage` the CURRENT tab's localStorage/
-  sessionStorage (bearer/JWT tokens included), so BOTH are gated PER SITE, PER BROWSER SESSION by a popup
+  sessionStorage (bearer/JWT tokens included — read via a FIXED `Runtime.evaluate` expression because
+  `DOMStorage` is not exposed to `chrome.debugger`; the one page-JS exception, values untrusted), so BOTH
+  are gated PER SITE, PER BROWSER SESSION by a popup
   the user must approve IN THE EXTENSION (`read_storage` additionally PER STORAGE TYPE — one unified
   `dataConsentGrants` store keyed `{host:{cookies?,local?,session?}}`, so approving one type never approves
   another; the first read of a site+type prompts; the grant is remembered in `chrome.storage.session`,

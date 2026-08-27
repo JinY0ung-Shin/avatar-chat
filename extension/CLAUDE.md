@@ -31,9 +31,11 @@ Durable constraints for this layer:
 - **The extension FETCHES NOTHING on its own, and that is a security decision.** The 0.7.0 self-updater page
   (updater.html/js/css) was removed in 0.9.0 because fetch-verify-write-reload is dropper-shaped — Windows
   Defender quarantined the shipped zip over it. Do NOT reintroduce `host_permissions` or any network call
-  here. `CDP_ALLOWLIST` in `background.js` stays default-deny (no `Runtime.*`/`Storage.*`; of `Network.*`
-  ONLY the consent-gated, current-origin `Network.getCookies` behind `read_cookies`, plus the `DOMStorage`
-  domain's `DOMStorage.getDOMStorageItems` — NOT `DOMStorage.enable` — behind `read_storage`). Both reads
+  here. `CDP_ALLOWLIST` in `background.js` stays default-deny (no `Storage.*`; of `Runtime.*` ONLY
+  `Runtime.evaluate` behind `read_storage` — the ONE documented page-JS exception, a FIXED bridge-authored
+  expression selected by store kind, NOT `Runtime.enable`, because `DOMStorage` is not exposed to
+  `chrome.debugger`; of `Network.*` ONLY the consent-gated, current-origin `Network.getCookies` behind
+  `read_cookies`). Both reads
   gate on ONE unified per-(host, data type) consent (`dataConsentGrants`): the first read of a site+type
   each browser session prompts a popup (approving cookies never approves localStorage/sessionStorage, and
   vice versa; approval remembered in `chrome.storage.session`, revocable in the options page, cleared on

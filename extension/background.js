@@ -3,13 +3,21 @@
 // Receives semantic operations from an authenticated Noah tab and performs them
 // with CDP over chrome.debugger. Two invariants shape the whole file:
 //
-//  1. NO JAVASCRIPT EXECUTION. `Runtime.*` is not in the allowlist and no code
-//     path builds a script string. Elements are addressed by backendNodeId from
-//     the accessibility tree, so there is nothing for injected page text to
-//     escape into. This is the property that bounds credential reach — the
-//     permission manifest does not (a page-context fetch with credentials
-//     included would inherit every session, which is exactly why we never gain
-//     the ability to run one).
+//  1. NO JAVASCRIPT EXECUTION — with ONE narrow, deliberate exception. Almost no
+//     code path builds a script string, and elements are addressed by
+//     backendNodeId from the accessibility tree, so there is nothing for injected
+//     page text to escape into. The ONE exception is `read_storage`: it evaluates
+//     a FIXED, bridge-authored expression via `Runtime.evaluate` (one of the two
+//     READ_*_STORAGE_EXPR constants, chosen by the validated store kind) to read
+//     Web Storage — because DOMStorage, the only CDP domain that reads
+//     localStorage/sessionStorage, is NOT in the domain allowlist chrome.debugger
+//     exposes, so there is no no-JS way to read it. That expression is a constant
+//     that NEVER carries model- or page-derived input, was added by a deliberate
+//     owner decision, and its result is treated as untrusted page content. This
+//     no-JS property is what bounds credential reach — the permission manifest
+//     does not (a page-context fetch with credentials included would inherit every
+//     session, which is exactly why we never gain the ability to run an ARBITRARY
+//     script; the read_storage exception is a fixed constant, not that).
 //
 //  2. ENFORCE HERE, NOT UPSTREAM. The server also gates, but a guardrail that
 //     lives only on the far side of the wire is not a guardrail. Every command
@@ -39,9 +47,11 @@ const CDP_VERSION = "1.3";
 
 /**
  * Default-deny allowlist of CDP methods. Everything the bridge needs and
- * nothing else — notably no `Runtime.*`, no `Storage.*`, no `Browser.*`, and of
- * `Network.*` ONLY the consent-gated `Network.getCookies` (its own paragraph
- * below), never the event-streaming rest. The read-only additions stay
+ * nothing else — of `Runtime.*` ONLY the single `Runtime.evaluate` behind
+ * read_storage (its own paragraph below — the ONE exception to this file's
+ * no-page-JS invariant), no `Storage.*`, no `Browser.*`, and of `Network.*` ONLY
+ * the consent-gated `Network.getCookies` (its own paragraph below), never the
+ * event-streaming rest. The read-only additions stay
  * inside that line: `DOM.describeNode` reads structure, `Page.captureScreenshot`
  * reads pixels — the same exfiltration class as a snapshot, gated by the same
  * origin allowlist — `DOM.getNodeForLocation` hit-tests a point so a
@@ -61,8 +71,9 @@ const CDP_VERSION = "1.3";
  *
  * `DOMSnapshot.captureSnapshot` reads the whole document ONCE — structure,
  * attributes, the computed styles it is asked for, laid-out text and boxes. It
- * executes no page JS (that is the invariant at the top of this file, and it is
- * why this is not a `Runtime.evaluate` in disguise) and it is the same
+ * executes no page JS (the invariant at the top of this file holds for it in
+ * full — unlike read_storage's one fixed expression, this is not a
+ * `Runtime.evaluate` in disguise) and it is the same
  * exfiltration class as the `Accessibility.getFullAXTree` already here, gated by
  * the same origin allowlist. It exists because a page's thumbnails are routinely
  * plain <div>s with a click listener and no accessibility node at all: without
@@ -98,18 +109,32 @@ const CDP_VERSION = "1.3";
  * the user's live session tokens — the reason for both the consent gate and the
  * audit that logs cookie NAMES only, never values.
  *
- * `DOMStorage.getDOMStorageItems` is the SECOND such method, added for
- * read_storage, and the same reasoning holds: it is a COMMAND that reads one
- * origin's localStorage or sessionStorage for a given storageId, NOT an event
- * subscription — probe-measured (`tests/visual/storage-facts.spec.ts`) to answer
- * with only DOM/Page enabled, so `DOMStorage.enable` (the change-event stream)
- * stays OFF the list, the DOMSnapshot.enable rule once more. read_storage passes
- * `storageId:{ securityOrigin: <tab origin>, isLocalStorage }`, so ONLY the
- * current tab's origin is ever read, and it runs ONLY after the user approves a
- * per-site, PER-STORAGE-TYPE, per-session popup (requestDataConsent again). What
- * it returns is credential-class data (localStorage routinely holds bearer/JWT
- * tokens) — the reason for both the consent gate and the audit that logs entry
- * KEY names only, never values.
+ * `Runtime.evaluate` is the ONE method here that runs page JavaScript, and the
+ * ONE exception to the no-page-JS invariant at the top of this file. It exists
+ * for read_storage: `DOMStorage` — the only CDP domain that reads Web Storage —
+ * is EXCLUDED from the domain allowlist Chrome's `chrome.debugger` API exposes,
+ * so `DOMStorage.getDOMStorageItems` rejects over `chrome.debugger.sendCommand`
+ * with `-32601` "wasn't found". (It answers only over RAW CDP — a different, more
+ * permissive transport this extension does not use, which is why an earlier
+ * raw-CDP probe over Playwright's `newCDPSession` wrongly cleared it; pin Chrome
+ * facts on the transport we actually call, `chrome.debugger`.) There is therefore
+ * NO no-JS way to read localStorage/sessionStorage here. The mitigations that
+ * keep the exception narrow: the evaluated `expression` is a FIXED,
+ * bridge-authored constant chosen by the validated store kind (one of
+ * READ_LOCAL_STORAGE_EXPR / READ_SESSION_STORAGE_EXPR — never message.name/kind,
+ * the tab URL, or any page/model value, and sendCdp STRUCTURALLY refuses any
+ * other expression via RUNTIME_EVALUATE_ALLOWED, so "no arbitrary page JS" is
+ * enforced at the transport, not just by call-site convention), it runs with
+ * returnByValue in the
+ * CURRENT tab only (no page mutation, no awaited promise, no user gesture), and
+ * it stays behind the SAME per-site, PER-STORAGE-TYPE, per-session consent
+ * (requestDataConsent) as before. What it returns is credential-class data
+ * (localStorage routinely holds bearer/JWT tokens) AND untrusted page content —
+ * the reason for the consent gate, the audit that logs entry KEY names only
+ * (never values), and the untrusted-data framing the tool result puts around it.
+ * No other `Runtime.*` belongs here: `Runtime.enable` (the console/exception
+ * event stream) stays OFF, evaluate needing no enable exactly as
+ * `Network.getCookies` needed no `Network.enable`.
  */
 const CDP_ALLOWLIST = new Set([
   "Accessibility.enable",
@@ -125,7 +150,6 @@ const CDP_ALLOWLIST = new Set([
   "DOM.focus",
   "DOM.scrollIntoViewIfNeeded",
   "DOMSnapshot.captureSnapshot",
-  "DOMStorage.getDOMStorageItems",
   "Input.dispatchKeyEvent",
   "Input.dispatchMouseEvent",
   "Input.imeSetComposition",
@@ -142,8 +166,35 @@ const CDP_ALLOWLIST = new Set([
   "Page.handleJavaScriptDialog",
   "Page.navigate",
   "Page.navigateToHistoryEntry",
+  "Runtime.evaluate",
   "Target.setAutoAttach",
 ]);
+
+/**
+ * The two FIXED expressions read_storage evaluates via `Runtime.evaluate` — the
+ * ONLY page JS this bridge runs (see the file header and the CDP_ALLOWLIST
+ * rationale). They differ ONLY in localStorage vs sessionStorage; the read_storage
+ * branch picks between them by the already-validated store kind and NEVER
+ * interpolates message.name/kind, the tab URL, or any other page/model value.
+ * Each is defensive by construction: any throw (storage disabled on the origin, a
+ * hostile getItem override) is caught and the expression returns "[]", so a read
+ * failure fails closed to an empty list rather than a page-thrown exception. The
+ * returned JSON string is parsed and the optional name filter applied on the
+ * EXTENSION side, on the parsed result — never inside the expression.
+ */
+const READ_LOCAL_STORAGE_EXPR =
+  '(() => { try { const s = localStorage; const out = []; for (let i = 0; i < s.length; i++) { const k = s.key(i); out.push([k, s.getItem(k)]); } return JSON.stringify(out); } catch (e) { return "[]"; } })()';
+const READ_SESSION_STORAGE_EXPR =
+  '(() => { try { const s = sessionStorage; const out = []; for (let i = 0; i < s.length; i++) { const k = s.key(i); out.push([k, s.getItem(k)]); } return JSON.stringify(out); } catch (e) { return "[]"; } })()';
+
+/**
+ * The ONLY expressions `Runtime.evaluate` may run. sendCdp enforces this
+ * membership STRUCTURALLY, so the no-page-JS exception stays exactly these two
+ * audited constants: a future call site that tried to pass a dynamic or
+ * interpolated expression (any page/model value) is rejected at the transport,
+ * not merely discouraged by the call-site convention above.
+ */
+const RUNTIME_EVALUATE_ALLOWED = new Set([READ_LOCAL_STORAGE_EXPR, READ_SESSION_STORAGE_EXPR]);
 
 /**
  * Which hostnames the bridge may drive. EMPTY MEANS DENY EVERYTHING — the
@@ -362,6 +413,13 @@ let lastShot = null;
 function sendCdp(target, method, params) {
   if (!CDP_ALLOWLIST.has(method)) {
     return Promise.reject(new Error(`Method not allowed: ${method}`));
+  }
+  // Structural bar on the no-page-JS exception: Runtime.evaluate may run ONLY
+  // the two fixed, bridge-authored read_storage expressions. A call site that
+  // interpolated a page/model value would be refused HERE, restoring most of the
+  // structural guarantee the allowlist gave before the exception was carved out.
+  if (method === "Runtime.evaluate" && !RUNTIME_EVALUATE_ALLOWED.has(params?.expression)) {
+    return Promise.reject(new Error("Runtime.evaluate is restricted to the fixed read_storage expressions"));
   }
   return new Promise((resolve, reject) => {
     chrome.debugger.sendCommand(target, method, params || {}, (result) => {
@@ -4852,37 +4910,58 @@ async function performOp(message, stagingOrigin) {
     // already permits. localStorage routinely holds bearer/JWT tokens, so it
     // gets the SAME treatment as cookies.
     let host = "";
-    let origin = "";
     try {
-      const parsed = new URL(tab.url || "");
-      host = parsed.hostname;
-      origin = parsed.origin;
+      host = new URL(tab.url || "").hostname;
     } catch {
-      // Unparseable tab URL: fall back to the raw string for the popup; the
-      // read below then fails closed on the empty origin rather than guessing.
+      // Unparseable tab URL: fall back to the raw string for the popup.
     }
     const type = message.kind === "local" ? "local" : "session";
     const consent = await requestDataConsent(host || tab.url || "", type);
     if (!consent.granted) return { ok: false, message: consent.reason };
-    let entries;
+    // The ONE page-JS exception (see the file header + CDP_ALLOWLIST rationale):
+    // Web Storage is unreachable over chrome.debugger any other way — DOMStorage
+    // is not in its domain allowlist — so read the store with a FIXED,
+    // bridge-authored expression selected by the already-validated `type`. The
+    // tab URL, message.name, and message.kind NEVER enter the expression; it runs
+    // in the CURRENT tab's main frame only, so only this origin's storage is read.
+    const expression = type === "local" ? READ_LOCAL_STORAGE_EXPR : READ_SESSION_STORAGE_EXPR;
+    const storeLabel = type === "local" ? "localStorage" : "sessionStorage";
+    let evaluated;
     try {
-      // Scoped to the CURRENT tab's origin ONLY — never another site's storage.
-      // getDOMStorageItems is a command, not an event subscription, so it needs
-      // no DOMStorage.enable (see the CDP_ALLOWLIST rationale). isLocalStorage
-      // picks localStorage (true) vs sessionStorage (false); the storageKey
-      // variant fails "Frame not found", so securityOrigin is used (CDP marks it
-      // deprecated, but it is the one that works).
-      ({ entries } = await sendCdp({ tabId: tab.id }, "DOMStorage.getDOMStorageItems", {
-        storageId: { securityOrigin: origin, isLocalStorage: type === "local" },
-      }));
+      evaluated = await sendCdp({ tabId: tab.id }, "Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        awaitPromise: false,
+        userGesture: false,
+      });
     } catch (error) {
       return {
         ok: false,
-        message: `Could not read the tab's ${type === "local" ? "localStorage" : "sessionStorage"}: ${String(error?.message || error)}`,
+        message: `Could not read the tab's ${storeLabel}: ${String(error?.message || error)}`,
       };
     }
-    // getDOMStorageItems answers with entries as [key, value] pairs.
-    let storage = (Array.isArray(entries) ? entries : []).map((pair) => ({
+    // A page-side throw surfaces as exceptionDetails — fail closed rather than
+    // report an empty read as success.
+    if (evaluated?.exceptionDetails) {
+      return {
+        ok: false,
+        message: `Could not read the tab's ${storeLabel}: the page raised an error while reading storage.`,
+      };
+    }
+    // result.value is the JSON string the fixed expression returned ("[]" on any
+    // in-page failure). Parse defensively — anything unparseable or non-array
+    // fails closed to an empty list, and every entry is treated as untrusted page
+    // content below.
+    let entries = [];
+    try {
+      const parsed = JSON.parse(String(evaluated?.result?.value ?? "[]"));
+      if (Array.isArray(parsed)) entries = parsed;
+    } catch {
+      entries = [];
+    }
+    // Entries arrive as [key, value] pairs; the optional name filter is applied
+    // HERE, on the parsed result, never inside the evaluated expression.
+    let storage = entries.map((pair) => ({
       key: String(pair?.[0] ?? ""),
       value: String(pair?.[1] ?? ""),
     }));

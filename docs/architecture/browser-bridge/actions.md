@@ -238,6 +238,7 @@
   image into a contentEditable; if a real editor (Confluence) ignores the synthetic shortcut, the known
   upgrade is a `commands:["paste"]` field on `press_key` (the same Blink-editor-command escape hatch
   `selectAll` already uses) — deferred until measurement shows it is needed. Security posture: the
-  agent NEVER reads the clipboard (no `clipboardRead`, and the extension runs no page JS, so nothing
-  the paste pulled comes back to the model); the one side effect is that the user's prior clipboard
+  agent NEVER reads the clipboard (no `clipboardRead`, and the only page JS the extension runs is
+  `read_storage`'s fixed Web-Storage expression, which cannot reach the clipboard, so nothing the paste
+  pulled comes back to the model); the one side effect is that the user's prior clipboard
   contents are overwritten by the image.

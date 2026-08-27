@@ -5,8 +5,9 @@
 > so **read [contract.md](browser-bridge/contract.md) before any change**, then open only the page
 > for the area you are touching.
 
-The durable direction (relay into the user's own browser, the extension never runs page JS, the
-default-deny `CDP_ALLOWLIST` is the boundary, everything the page returns is untrusted) lives in
+The durable direction (relay into the user's own browser, the extension runs no page JS beyond one fixed
+bridge-authored expression for `read_storage`, the default-deny `CDP_ALLOWLIST` is the boundary, everything
+the page returns is untrusted) lives in
 [`../../CLAUDE.md`](../../CLAUDE.md). Cautions for the shipped folder itself — `BUNDLE_FILES`,
 `BINARY_BUNDLE_FILES`, the min-compatible ceiling — are in
 [`../../extension/CLAUDE.md`](../../extension/CLAUDE.md). The user-facing install and allowlist-policy
