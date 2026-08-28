@@ -34,7 +34,10 @@ import type { AgentEvents, FileOutputResult } from "./events.js";
 import { probeDeckRendering } from "../deckRender.js";
 import { visionForModel } from "../modelVisionPolicy.js";
 import { readWorkspaceImage } from "../chatImages.js";
-import { stageClipboardImage as stageClipboardImageBytes } from "../browserClipboard.js";
+import {
+  stageClipboardImage as stageClipboardImageBytes,
+  stageClipboardText as stageClipboardTextBytes,
+} from "../browserClipboard.js";
 import logger from "../logger.js";
 import { knownHostsPath } from "../sshTrust.js";
 import {
@@ -1054,6 +1057,13 @@ export async function buildAgentRunPlan(
                 }
                 return stageClipboardImageBytes(read.buffer, read.mediaType, stagingUserId);
               }
+            : undefined,
+        // copy_text: the same staging store and the same origin+viewer gate as
+        // copy_image, minus the workspace resolution — the payload is a string
+        // the model authored, so the only bound is the store's byte cap.
+        stageClipboardText:
+          request.appOrigin && stagingUserId
+            ? async (value) => stageClipboardTextBytes(value, stagingUserId)
             : undefined,
       })
     : null;

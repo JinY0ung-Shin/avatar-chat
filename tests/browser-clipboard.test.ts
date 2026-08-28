@@ -1,7 +1,11 @@
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, createServices } from "../src/server/app.js";
-import { stageClipboardImage, readStagedImage } from "../src/server/browserClipboard.js";
+import {
+  stageClipboardImage,
+  stageClipboardText,
+  readStagedImage,
+} from "../src/server/browserClipboard.js";
 import { buildBrowserTools } from "../src/server/agent/browserTools.js";
 import { requestOrigin, viewerPlatformFromUserAgent } from "../src/server/routes/_shared.js";
 import type { AuthenticatedRequest } from "../src/server/auth.js";
@@ -77,6 +81,27 @@ describe("clipboard staging store", () => {
     expect(readStagedImage(token)).toBeNull();
   });
 
+  it("round-trips TEXT through the same store, tagged so the staging page picks its text mode", () => {
+    // copy_text adds no route and no wire op: it rides the image contract and
+    // the served Content-Type is the ONLY thing that differs.
+    const { token, path } = stageClipboardText("코드 <script>\nline 2", "user-a");
+    expect(path).toBe("/browser-clip/" + token);
+    const got = readStagedImage(token);
+    expect(got?.mime).toBe("text/plain; charset=utf-8");
+    expect(got?.bytes.toString("utf8")).toBe("코드 <script>\nline 2");
+    expect(got?.userId).toBe("user-a");
+  });
+
+  it("refuses text over the staging byte cap instead of parking it for the TTL", () => {
+    // Defense in depth behind copy_text's own character cap: multi-byte
+    // characters mean a legal character count can still be megabytes of UTF-8.
+    expect(() => stageClipboardText("가".repeat(400_000), "user-a")).toThrow(
+      /clipboard staging limit/,
+    );
+    // Just under the cap still stages.
+    expect(() => stageClipboardText("a".repeat(999_999), "user-a")).not.toThrow();
+  });
+
   it("sweeps expired entries on a plain read, not only when something new is staged", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -122,6 +147,44 @@ describe("clipboard staging routes", () => {
     // with list_tabs — both branches must be reachable from the script.
     expect(script.text).toContain("COPIED");
     expect(script.text).toContain("COPY_FAILED");
+  });
+
+  it("serves staged TEXT under its own content type, which is what puts the page in text mode", async () => {
+    const app = testApp();
+    const { agent, userId } = await signedUp(app, "clip-text-user");
+    const { token } = stageClipboardText("# 제목\n본문 <b>x</b>", userId);
+
+    const body = await agent.get(`/browser-clip/${token}/img`).expect(200);
+    expect(body.headers["content-type"]).toContain("text/plain");
+    expect(body.text).toBe("# 제목\n본문 <b>x</b>");
+
+    // The page itself is payload-agnostic — one generic heading and one button
+    // the agent clicks, whichever kind was staged.
+    const page = await agent.get(`/browser-clip/${token}`).expect(200);
+    expect(page.text).toContain("클립보드로 복사");
+    expect(page.text).not.toContain("이미지를 클립보드로 복사");
+
+    // The script must carry BOTH branches: the text write and the image write.
+    const script = await agent.get("/browser-clip.js").expect(200);
+    expect(script.text).toContain("navigator.clipboard.writeText");
+    expect(script.text).toContain("ClipboardItem");
+    expect(script.text).toContain('contentType.indexOf("text/")');
+  });
+
+  it("hides another user's staged TEXT behind the same 404 as an expired token", async () => {
+    const app = testApp();
+    const owner = await signedUp(app, "clip-text-owner");
+    const stranger = await signedUp(app, "clip-text-stranger");
+    const { token } = stageClipboardText("secret draft", owner.userId);
+
+    // Same rule as an image: the token is printed into the persisted tool
+    // result, so holding it must not be enough to read someone else's text.
+    const expired = await stranger.agent.get("/browser-clip/deadbeef").expect(404);
+    const foreign = await stranger.agent.get(`/browser-clip/${token}`).expect(404);
+    expect(foreign.text).toBe(expired.text);
+    const foreignBytes = await stranger.agent.get(`/browser-clip/${token}/img`).expect(404);
+    expect(foreignBytes.text).not.toContain("secret draft");
+    await owner.agent.get(`/browser-clip/${token}/img`).expect(200);
   });
 
   it("404s an unknown or expired token for an authed viewer", async () => {

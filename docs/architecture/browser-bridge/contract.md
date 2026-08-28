@@ -87,3 +87,11 @@
   storageKind, never a value; the tool result (`browserTools.reportStorage`, sibling of `reportCookies`,
   sharing `sanitizeSecretField` + `secretBanner`) prepends the SECRET banner and frames the page-derived
   `storage_data` table as untrusted. Storage KEYS are untrusted text; VALUES are secrets and never normalized.
+- **The 0.24.0 additions all ride the existing degrade story, so `BROWSER_EXTENSION_MIN_COMPATIBLE`
+  stays 0.6.0.** `dialog_status` (the `handle_dialog` no-`accept` probe — actions.md) is a new wire OP
+  with NO new fields, so the five layers only had to learn the op name (the chat relay forwards `op`
+  generically); an old build answers "Unsupported operation" and the relay's existing translation
+  turns that into an update prompt. `copy_text` is a server tool over existing ops — no wire change at
+  all (actions.md). `maxChars`' floor dropped to 500 on BOTH sides in lockstep (snapshots.md; an old
+  build re-clamps to 2000 — a degrade). The AX-invisible clickable grouping is extension-render-only
+  (snapshots.md). The chat route's audit skip list grew to snapshot / wait_for / dialog_status.

@@ -142,6 +142,27 @@
     than the requested value now always carries a bridge note quoting BOTH — deliberately a note and
     never a throw, because phone masks, casing and autocomplete commits are legitimate rewrites and a
     completed write must not be reported as failed.
+- **A LONG insert is CHUNKED and read back — the no-clear path's one exception to "no read-back".**
+  Field case (issue #60): ~2.5 KB typed into Confluence's Monaco source textarea landed as its TAIL
+  only, reported as plain success — a virtualized editor ingests input event by event into its OWN
+  model, and one `Input.insertText` carrying thousands of characters outruns that sync. So
+  `insertValue` splits past 1000 code points (`INSERT_CHUNK_SIZE`) into code-point-safe chunks (the
+  IME-vs-plain path decided ONCE on the whole value) with a 60 ms settle between chunks and the
+  keystroke replay's per-chunk dialog check; `imeRewrite` (rung B) stays UNCHUNKED on purpose — a
+  replacement range is atomic by nature, and splitting it would turn one replacement into N appends.
+  A write of ≥ 1000 code points (`LONG_WRITE_VERIFY_MIN`) additionally pays ONE `resolveValueNode`
+  walk — BEFORE the write, because the editor re-renders as it ingests — plus one settled read: a
+  whitespace-normalized CONTAINS check (insert-at-cursor lands INSIDE whatever the field held), ending
+  in a bridge note and NEVER a throw, because the editor may hold the full content in its own model
+  while the DOM proxy it exposes windows a slice — a throw would report a landed write as failed. The
+  mismatch note quotes sent-vs-read-back lengths, adds the hidden-proxy sentence only on
+  `isHiddenProxyInput` evidence (a geometry claim, not a class-name guess), and names the recovery
+  that actually works: `mcp__browser__copy_text` + paste. A dialog raised mid-write stops the chunk
+  loop AND skips the read-back (the field holds a PREFIX the editor was never given the rest of; the
+  op tail reports the dialog). `inputPreflight` also flags known virtualized editors off the RAW class
+  attribute (`VIRTUALIZED_EDITOR_CLASS_RE` — Monaco / CodeMirror 5+6 / Ace; raw because CodeMirror 5's
+  class is capitalized and `attrOf` lowercases) — a SIGNAL that words the unverified note, never a
+  gate. Short values keep the zero-cost single-insert path byte for byte.
 - **Two guards run before a click, and `clickNode` itself stays UNGUARDED by design**
   (`select_option`'s option click and `focusForInput`'s fallback reuse it; the guards live in the op
   branches). (1) FILE-UPLOAD refusal: `<input type=file>` looks like any `button` in the AX tree — its
@@ -190,6 +211,29 @@
   prose (ok-note, `Current page:`, share/dialog guidance, bridge note, snapshotError) stays outside
   and ahead; a sectionless result (select_tab's identity reply) renders no wrapper at all. A dialog's
   own message rides INSIDE the block; the instructions for answering it stay outside and point at it.
+- **`dialog_status` is the side-effect-free "is a dialog open?" question; `handle_dialog` with no
+  `accept` asks it.** Field case (issue #61, Confluence 2026-08-28): a draft-restore dialog opened
+  BEFORE the bridge attached, so `Page.javascriptDialogOpening` never fired, `pendingDialogs` stayed
+  empty, and every click failed with nothing saying why. The TRACKED case was never the problem —
+  perform()'s guard already answers any op with `dialogBlockedResult`, and dialog_status is
+  deliberately NOT excluded from that guard, so it only ever runs when the maps say clear. The
+  remaining evidence is whether the RENDERER answers at all: `DOM.getDocument {depth:0}` (the cheapest
+  allowlisted renderer-bound call, no page JS) raced against 800 ms via `probeWithin`, whose THREE
+  outcomes exist because "answered with an error" and "did not answer" must not collapse — a CDP
+  rejection is the browser ANSWERING (not the dialog signature, but not evidence of a clear page
+  either), so that path says the state could NOT be determined instead of guessing. The ATTACH is
+  bounded too, for this op ALONE (3000 ms, looser — a cold attach on a heavy page is legitimately
+  slow): `ensureAttached`'s enables are renderer-bound and the attach is cold in exactly the field
+  case (the MV3 worker idles out between turns, Chrome detaches with it, the dialog opens in the gap),
+  so unbounded, the op that exists to explain a hang would itself hang; every other op's attach path
+  is byte-for-byte unchanged. Answers are identity-only (a probe is not a READ — no snapshot), the two
+  non-answering outcomes return no tab list (a result that lists tabs reads as a page the bridge is
+  talking to normally — the very impression those outcomes exist to correct), and `routes/chat.ts`
+  skips the audit row like snapshot/wait_for: it is the question an agent asks when it is confused,
+  and rows would bury the actions. An old build answers "Unsupported operation", which the relay's
+  existing translation turns into an update prompt — `BROWSER_EXTENSION_MIN_COMPATIBLE` stays put. The
+  server sends the probe only when `accept` is omitted (promptText without accept is refused as a
+  half-formed ANSWER, server-side, before the wire), so the answering contract is untouched.
 - **`copy_image` puts an image on the OS clipboard through a FIRST-PARTY Noah page — not the
   extension.** A Chrome MV3 extension cannot write an image to the clipboard (the async Clipboard API
   needs a focused document + user activation, which an offscreen document can't get, and
@@ -242,3 +286,20 @@
   `read_storage`'s fixed Web-Storage expression, which cannot reach the clipboard, so nothing the paste
   pulled comes back to the model); the one side effect is that the user's prior clipboard
   contents are overwritten by the image.
+- **`copy_text` is copy_image's TEXT sibling, and the staging store is MIME-agnostic.** Issue #59's
+  root fix: a paste is ingested ATOMICALLY by the editor's own paste handler, which is the reliable
+  route for multi-KB content into a virtualized editor where a long `type` gets dropped (the type
+  path's chunking + verification above is the safety net; this is the cure). Same token/path/TTL
+  contract (`stageBytes` — `stageClipboardImage` kept its exported signature as a thin wrapper), same
+  `/browser-clip/<token>` page and extension exemption, same COPIED/COPY_FAILED title contract, ZERO
+  extension surface: the staging script fetches the payload ONCE and branches on the response
+  Content-Type — `text/*` goes verbatim to `navigator.clipboard.writeText` (no ClipboardItem needed,
+  so the text mode works even where the image mode cannot), anything else through the existing
+  data:-URL → canvas → PNG pipeline. The tool result and both metacognition surfaces script the drive
+  flow: stage → new_tab → click → VERIFY COPIED via list_tabs → select_tab back → focus → select-all
+  when REPLACING (`selectAllInstruction`, OS-branched exactly like `pasteInstruction`: Ctrl+A selects
+  nothing on macOS, and a silently-failed select-all turns REPLACE into APPEND) → paste → re-read.
+  Costs stated where they bind: it OVERWRITES the user's clipboard (tool text says so), text staging
+  is capped at 1 MB server-side (`MAX_STAGED_TEXT_BYTES`, under the 200k-char schema cap), and the
+  expired-token message went generic ("만료되었거나 찾을 수 없는 항목입니다") since the store holds
+  text now.

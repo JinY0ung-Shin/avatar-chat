@@ -36,10 +36,12 @@ import {
   axValueAnswer,
   clearFailed,
   extraClickables,
+  groupClickableItems,
   ariaSortByBackendId,
   sliderPlan,
   unlabeledInteractiveIds,
   EXTRA_CLICKABLE_MAX,
+  EXTRA_CLICKABLE_GROUP_HEAD,
 } from "./axtree.js";
 
 const GROUP_TITLE = "Noah";
@@ -592,6 +594,90 @@ async function raceDialogOpen(tabId, work) {
     work.catch(() => {});
   }
 }
+
+/**
+ * How long `dialog_status` waits for the page to answer a read-only CDP call
+ * before calling the renderer STUCK. A dialog blocks the renderer outright, so
+ * an answer either comes back in a round trip or does not come back at all —
+ * 800ms is generous for the first case and short enough that PROBING is cheaper
+ * than the action that would otherwise hang.
+ */
+const DIALOG_PROBE_TIMEOUT_MS = 800;
+
+/**
+ * The same bound for the ATTACH that necessarily precedes the probe, but far
+ * looser. A blocked renderer stalls `ensureAttached` too (DOM/Accessibility/Page
+ * enable are all renderer-bound), and the attach is COLD in exactly the field
+ * case this op exists for: the MV3 worker idles out between turns, Chrome
+ * detaches with it, and the dialog opens in that gap. Without a bound the probe
+ * below would never be reached. Wider than the probe because a cold attach on a
+ * heavy page is legitimately slow, and calling a working page "stuck" is the one
+ * wrong answer worse than saying nothing.
+ */
+const DIALOG_PROBE_ATTACH_TIMEOUT_MS = 3000;
+
+/** Sentinel for "this did not answer at all", as opposed to answering an error. */
+const PROBE_TIMED_OUT = { timedOut: true };
+
+/**
+ * `work`, bounded. Resolves to `{ value }`, `{ error }`, or PROBE_TIMED_OUT —
+ * three answers because the whole of dialog_status rests on telling "answered
+ * with an error" apart from "did not answer", and a plain try/catch collapses
+ * them. The `.then().catch()` chain is attached SYNCHRONOUSLY (the same reason
+ * raceDialogOpen trails a `.catch(() => {})`), so work that settles long after
+ * the timeout won still has a handler and can never become an unhandled
+ * rejection.
+ */
+function probeWithin(work, budgetMs) {
+  let timer = null;
+  return Promise.race([
+    work.then((value) => ({ value })).catch((error) => ({ error })),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(PROBE_TIMED_OUT), budgetMs);
+    }),
+  ]).then((outcome) => {
+    if (timer !== null) clearTimeout(timer);
+    return outcome;
+  });
+}
+
+/** dialog_status when the page answered: nothing is blocking the renderer. */
+const DIALOG_PROBE_CLEAR_NOTE =
+  "No JavaScript dialog is open on this tab (the page responded to a status check just now).";
+
+/**
+ * dialog_status when the page did NOT answer. The tracked case never reaches
+ * here (see the guard in performOp), so silence means a dialog this bridge never
+ * saw open — or a renderer too busy to answer, which no bridge op can tell apart
+ * from the outside. Both end the same way: a person has to look at the tab. The
+ * budget is named rather than hardcoded because two phases can time out (the
+ * attach and the probe itself) and quoting the wrong one reads as a bug.
+ */
+const dialogProbeStuckNote = (budgetMs) =>
+  `The page did not respond to a status check within ${budgetMs}ms. That usually means a NATIVE JavaScript ` +
+  "dialog opened BEFORE this bridge attached to the tab — such a dialog is invisible to the bridge and blocks " +
+  "every action on the page — or the page is severely busy. Ask the user to look at the tab and dismiss any " +
+  "dialog by hand; actions will keep failing until they do.";
+
+/**
+ * dialog_status when the probe came back as an ERROR rather than an answer. A
+ * rejection is still the browser ANSWERING, so it is not the dialog signature
+ * (that is silence) — but it is not evidence of a clear page either, and saying
+ * "no dialog is open" off a failed read would be exactly the kind of confident
+ * wrong answer this op exists to replace.
+ */
+const dialogProbeFailedNote = (error) =>
+  `A status check on this tab could not be completed (${quoteForNote(String(error?.message || error), 120)}), so ` +
+  "whether a JavaScript dialog is open could NOT be determined. The page did answer rather than hang, which is " +
+  "NOT the signature of an open dialog; take a snapshot to see the current page state.";
+
+/** dialog_status's non-answering result: identity only, and never a tab list. */
+const dialogProbeStuckResult = (tab, budgetMs) => ({
+  ok: true,
+  note: dialogProbeStuckNote(budgetMs),
+  url: tab.url || "",
+  title: tab.title || "",
+});
 
 /** Result for "a dialog is open": everything but a snapshot, which would hang. */
 async function dialogBlockedResult(tab) {
@@ -1327,18 +1413,44 @@ const EXTRA_CONTAINER_ROLES = new Set([
 ]);
 
 /**
+ * How many AX-invisible clickables the SELECTION walk may collect per snapshot,
+ * as distinct from EXTRA_CLICKABLE_MAX, which is what it may PRINT. Grouping
+ * needs material: a 128-cell table that stops being collected at 40 can only be
+ * summarized as "40 of them", which is the same lie the cap used to tell. The
+ * extra collection is cheap by construction — label and hint are derived from
+ * the DOMSnapshot payload already in hand, so no item costs a CDP round trip —
+ * and the walk itself is bounded by EXTRA_CLICKABLE_SCAN_MAX either way.
+ */
+const EXTRA_CLICKABLE_COLLECT_MAX = 200;
+
+/**
+ * One summary line standing in for a run of interchangeable elements. UNMINTED
+ * on purpose: only printed items get uids, exactly as under the old cap, and a
+ * uid for "126 cells" would name nothing. It says what to do INSTEAD, because a
+ * line the agent cannot act on has to point at one it can.
+ */
+const extraClickableGroupLine = (unit) =>
+  `  … ${unit.count} more like the ${EXTRA_CLICKABLE_GROUP_HEAD} above (${unit.signature}) — not listed ` +
+  "individually; they are the same kind of element, so act on a listed one or scope a snapshot to their container.";
+
+/**
  * What the cap says when it truncates. This codebase does not cap silently — and
  * the way out it names has to be one that WORKS. Selection is the first
- * EXTRA_CLICKABLE_MAX outermost survivors in DOCUMENT order, and the only
+ * EXTRA_CLICKABLE_COLLECT_MAX outermost survivors in DOCUMENT order, and the only
  * viewport-sensitive rule is an AREA comparison, so scrolling moves nothing into
  * the list; a uid-scoped snapshot does not render this section at all (it is
  * built in buildSnapshot alone). That leaves the pixel route, and making the page
  * itself show fewer elements.
+ *
+ * `more` is the WHOLE unlisted count — what the collection walk left behind plus
+ * what the print budget dropped — so between this notice and the grouped lines
+ * every element that existed is accounted for.
  */
 const extraClickableCut = (more) =>
-  `${more} more clickable elements without an accessibility entry were not listed: this section keeps the first ` +
-  `${EXTRA_CLICKABLE_MAX} in document order. Scrolling does not change which ones are listed, and a snapshot ` +
-  "scoped with `uid` does not include this section at all. To reach one that is missing, take " +
+  `${more} more clickable elements without an accessibility entry were not listed: this section prints at most ` +
+  `${EXTRA_CLICKABLE_MAX} lines in document order, and repeated elements of the same kind are summarized into ` +
+  "one grouped line instead of listed individually. Scrolling does not change which ones are listed, and a " +
+  "snapshot scoped with `uid` does not include this section at all. To reach one that is missing, take " +
   "mcp__browser__screenshot and aim mcp__browser__click_at at its pixels, or make the page itself show fewer " +
   "elements (search, filter, or open one section at a time).";
 
@@ -1346,6 +1458,13 @@ const extraClickableCut = (more) =>
  * The trailing section listing clickable elements the accessibility tree has no
  * entry for — see `extraClickables` for what qualifies and why the two signals
  * are both needed.
+ *
+ * TWO budgets, deliberately different: the walk COLLECTS up to
+ * EXTRA_CLICKABLE_COLLECT_MAX, and `groupClickableItems` then decides what is
+ * worth a PRINTED line out of EXTRA_CLICKABLE_MAX of them — a run of
+ * interchangeable elements collapses to one summary so the section's lines are
+ * spent on distinct controls (issue #62: 128 table cells crowded out the editor
+ * toolbar this section exists to surface).
  *
  * ROOT SESSION ONLY, and deliberately so for v1: same-process frames already
  * ride along in `documents[]` with backendNodeIds that are valid on the root
@@ -1378,7 +1497,10 @@ async function extraClickableLines(tab, mintedBackendIds, containerBackendIds, c
         mintedBackendIds,
         containerBackendIds,
         viewport,
-        limit: EXTRA_CLICKABLE_MAX - found.length,
+        // The COLLECTION budget, not the print budget: grouping can only
+        // summarize what it was handed, so a repeated element has to be counted
+        // even when it will never get a line of its own.
+        limit: EXTRA_CLICKABLE_COLLECT_MAX - found.length,
       });
       found.push(...answer.items);
       more += answer.more;
@@ -1388,8 +1510,18 @@ async function extraClickableLines(tab, mintedBackendIds, containerBackendIds, c
     // the stability and lifetime of every other uid on the page, and
     // click/click_at/hover resolve them with no new branch anywhere.
     const mint = (backendNodeId) => mintUid(tab.id, undefined, backendNodeId);
+    const grouped = groupClickableItems(found, EXTRA_CLICKABLE_MAX);
     const lines = [EXTRA_CLICKABLE_HEADER];
-    for (const item of found) {
+    for (const unit of grouped.units) {
+      if (unit.kind === "group") {
+        lines.push(extraClickableGroupLine(unit));
+        continue;
+      }
+      const item = unit.item;
+      // Only PRINTED items are minted — the same rule the cap always followed. A
+      // uid for a line nobody can see is a ref that can never be resolved from a
+      // snapshot, and the map would carry it until eviction.
+      //
       // Selection over every document is complete by here, so recording these
       // as minted only feeds the anchor climb below — never the selection.
       mintedBackendIds.add(item.backendNodeId);
@@ -1400,7 +1532,13 @@ async function extraClickableLines(tab, mintedBackendIds, containerBackendIds, c
       const dom = item.hint && (!item.label || identifying) ? ` (dom: ${item.hint})` : "";
       lines.push(`[${mint(item.backendNodeId)}] clickable "${item.label}"${dom}`);
     }
-    if (more > 0) lines.push(extraClickableCut(more));
+    // Everything unlisted, from BOTH budgets: what the collection walk never
+    // reached (`more`) plus what the print budget dropped (`grouped.omitted`,
+    // which already counts a cut summary as its members). Nothing may vanish
+    // between them — a cap the agent cannot see is indistinguishable from the
+    // element not existing.
+    const cut = more + grouped.omitted;
+    if (cut > 0) lines.push(extraClickableCut(cut));
     return lines;
   } catch {
     return []; // No enrichment; the snapshot is exactly what it was before.
@@ -2024,15 +2162,21 @@ const EMPTY_SNAPSHOT_NOTE =
 
 /**
  * The snapshot op's `maxChars`, clamped. The floor keeps a request from asking
- * for a snapshot too small to hold any uid line; the ceiling is the point past
- * which the default cap is the better answer anyway.
+ * for a snapshot too small to hold ANY uid line — 500 still holds a handful, so
+ * a confirming read ("did the button flip to [pressed]?") never comes back
+ * uid-less; the ceiling is the point past which the default cap is the better
+ * answer anyway. It was 2000 until 0.24.0: an agent stepping through a long task
+ * pays this budget on EVERY action, and the smallest useful confirmation is a
+ * few lines, not two thousand characters. The server's zod floor moves with it —
+ * a wire value under the floor can still only ever SHRINK the cap, so the two
+ * disagreeing would silently hand back four times what was asked for.
  *
  * Type-checked rather than coerced, for the same reason clampFraction is: an
  * omitted field arrives on the wire as `null`, and `Number(null)` is 0 — finite,
  * so a coercing version would read "not asked" as "clamp me to the floor" and
  * silently truncate every snapshot to the minimum.
  */
-const SNAPSHOT_CHARS_MIN = 2000;
+const SNAPSHOT_CHARS_MIN = 500;
 const SNAPSHOT_CHARS_MAX = 30000;
 
 function clampSnapshotChars(value) {
@@ -3132,12 +3276,46 @@ async function resolveValueNode(ref) {
   return null;
 }
 
+/**
+ * Code points per insert chunk, and the beat between two of them.
+ *
+ * Field case (issue #60): ~2.5 KB of source typed into Confluence's Monaco
+ * textarea landed as its TAIL only — the HEAD was silently lost. A virtualized
+ * editor does not read the DOM value; it ingests input EVENT by event and syncs
+ * its own model, and one `Input.insertText` carrying thousands of characters
+ * outruns that sync, so the model that finally wins holds whatever it managed to
+ * take. Chunks give it a beat to ingest each piece. 1000 is under every value a
+ * short write uses (so ordinary fields keep the single-call path byte for byte)
+ * and small enough that a multi-KB write is several events rather than one;
+ * 60ms is a frame or two — enough for an editor's own async sync, cheap enough
+ * that a 10 KB write pays half a second of settles.
+ */
+const INSERT_CHUNK_SIZE = 1000;
+const INSERT_CHUNK_SETTLE_MS = 60;
+
 /** Enter text at the caret the way the field expects (IME for non-ASCII). */
 async function insertValue(target, value) {
-  if (needsComposition(value)) {
-    await insertTextAsIme(target, value);
-  } else {
-    await sendCdp(target, "Input.insertText", { text: value });
+  // Decided ONCE, on the WHOLE value: a string with one non-ASCII character
+  // anywhere must not switch input paths halfway through, or the editor sees two
+  // different kinds of event for one write.
+  const asIme = needsComposition(value);
+  const one = (text) =>
+    asIme ? insertTextAsIme(target, text) : sendCdp(target, "Input.insertText", { text });
+  // Spread, not slice: cutting on UTF-16 units would split a surrogate pair and
+  // hand the page half an emoji.
+  const points = [...value];
+  if (points.length <= INSERT_CHUNK_SIZE) return one(value);
+  for (let at = 0; at < points.length; at += INSERT_CHUNK_SIZE) {
+    // The same guard the keystrokes replay presses under: a change handler can
+    // raise a dialog mid-write, and events queued into a frozen renderer strand
+    // the whole op. The tail reports the open dialog.
+    if (pendingDialogs.has(target.tabId)) return;
+    await one(points.slice(at, at + INSERT_CHUNK_SIZE).join(""));
+    // Between chunks only — a trailing settle would delay every caller's
+    // read-back for nothing.
+    if (at + INSERT_CHUNK_SIZE < points.length) {
+      await new Promise((resolve) => setTimeout(resolve, INSERT_CHUNK_SETTLE_MS));
+    }
   }
 }
 
@@ -3186,6 +3364,10 @@ async function settledValue(valueNode) {
  *
  * false means the browser refused the composition (no IME-capable focus, an
  * older Chrome) — the caller falls through to the keyboard rung.
+ *
+ * Deliberately UNCHUNKED, unlike insertValue: a replacement range is atomic by
+ * nature — it names the span it overwrites — and splitting it would turn one
+ * replacement into N appends after the first.
  */
 async function imeRewrite(target, value, current) {
   try {
@@ -3440,14 +3622,41 @@ async function inputKind(ref, shape) {
 }
 
 /**
+ * Class names that say "this element belongs to a VIRTUALIZED editor": Monaco's
+ * hidden textarea (`inputarea`) and its wrappers, CodeMirror 6 (`cm-content`,
+ * `cm-editor`), CodeMirror 5 (`CodeMirror`), and Ace (`ace_text-input`). Such an
+ * editor keeps the document in its OWN model and renders a window of it, so the
+ * element a write lands in is a proxy — which is why a long write into one is
+ * the case that silently loses text (issue #60) and why the verification note
+ * below names them.
+ *
+ * Matched on the RAW class attribute, not `attrOf`'s lowercased read: CodeMirror
+ * 5's class is capitalized, and lowercasing would quietly stop matching it.
+ * Token-bounded so a page's own `my-inputarea-wrapper` is not mistaken for one.
+ */
+const VIRTUALIZED_EDITOR_CLASS_RE =
+  /(?:^|\s)(?:inputarea|monaco-editor|monaco-mouse-cursor-text|cm-content|cm-editor|CodeMirror|ace_text-input)(?:\s|$)/;
+
+/**
  * The pre-flight both text-entry paths share: ONE description of the element,
- * the file-upload refusal, and the control kind. Runs exactly once per field —
- * typeRef hands its result to fillField rather than letting it describe again.
+ * the file-upload refusal, the control kind, and whether the element looks like
+ * a virtualized editor's input. Runs exactly once per field — typeRef hands its
+ * result to fillField rather than letting it describe again.
+ *
+ * `virtualized` costs nothing: the depth-0 describeNode is already in hand for
+ * the file-upload refusal, and its attributes carry the class. It is a SIGNAL,
+ * never a gate — nothing here blocks or reroutes a write because of it (the
+ * agent asked for the write; honesty over paternalism), it only decides whether
+ * an unverifiable long write says WHY it is likely unverifiable.
  */
 async function inputPreflight(ref) {
   const shape = await describeElement(ref);
   assertNotFileInput(shape);
-  return { shape, kind: await inputKind(ref, shape) };
+  return {
+    shape,
+    kind: await inputKind(ref, shape),
+    virtualized: VIRTUALIZED_EDITOR_CLASS_RE.test(String(shape?.attrs?.class ?? "")),
+  };
 }
 
 /**
@@ -3629,6 +3838,54 @@ async function writeSpinButton(ref, target, value) {
 }
 
 /**
+ * Code-point length past which an insert-at-cursor write is READ BACK. Below it
+ * the no-clear path stays exactly what it always was — no read, no settle, no
+ * note — because insert-at-cursor cannot silently do the wrong thing at short
+ * lengths: it puts the text where the caret is and that is all it claims.
+ *
+ * Above it that stopped being true (issue #60): a virtualized editor ingesting a
+ * multi-KB insert keeps whatever it managed to take, and the tool reported the
+ * whole write as done. So a long write now pays ONE resolveValueNode walk plus
+ * ONE settled read — a few hundred milliseconds on a write that already cost
+ * several chunked inserts — to say whether the text is actually there. The trade
+ * is deliberately length-gated rather than universal: the cost is invisible next
+ * to a 2.5 KB write and would be the dominant cost of typing "hello".
+ */
+const LONG_WRITE_VERIFY_MIN = 1000;
+
+/** Whitespace-insensitive haystack/needle text, for the long-write check. */
+const normalizedForCompare = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
+
+/**
+ * What a long write says when the editor is one of the known virtualized kinds —
+ * or when the read-back simply does not contain what was sent, which is the same
+ * symptom. Names the recovery that actually works for multi-KB content: the
+ * clipboard, which an editor ingests as ONE paste event instead of a stream of
+ * insertions it has to keep up with.
+ */
+const VIRTUALIZED_LONG_WRITE_ADVICE =
+  "Virtualized editors (Monaco/CodeMirror) DROP parts of a long programmatic insert: check the content in the " +
+  "returned snapshot, and prefer mcp__browser__copy_text + paste for multi-KB text.";
+
+/** Long write whose outcome could not be read back at all. */
+const longWriteUnverifiedNote = (sent, virtualized) =>
+  `Long write NOT verified: ${sent} characters were sent, but this element exposes no readable value — check ` +
+  "the field's content in the returned snapshot before building on it." +
+  (virtualized ? ` ${VIRTUALIZED_LONG_WRITE_ADVICE}` : "");
+
+/**
+ * Long write that read back WITHOUT the text in it. A note and never a throw:
+ * the editor may hold the full content in its own model while the DOM proxy it
+ * exposes windows only part of it, so throwing would lie in the other direction
+ * — reporting a landed write as failed.
+ */
+const longWriteMismatchNote = (sent, after, proxy) =>
+  `Long write NOT verified: ${sent} characters were sent, the field reads back ` +
+  `${[...String(after ?? "")].length} ("${quoteForNote(after)}"). ` +
+  (proxy ? "The field is a custom editor's hidden proxy input, which strengthens that reading. " : "") +
+  VIRTUALIZED_LONG_WRITE_ADVICE;
+
+/**
  * Focus one field and enter `value` — the shared insert path of type and
  * fill_form. `clear` replaces the existing content instead of inserting into it,
  * through the verified ladder above. Returns that ladder's bridge note ("" when
@@ -3637,7 +3894,7 @@ async function writeSpinButton(ref, target, value) {
  */
 async function fillField(ref, value, clear, pre) {
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
-  const { shape, kind } = pre || (await inputPreflight(ref));
+  const { shape, kind, virtualized } = pre || (await inputPreflight(ref));
   // `clear` is meaningless on a slider — there is no text to replace — so the
   // control is driven as what it is, whichever flags the caller passed.
   if (kind === "slider") return driveSlider(ref, value, shape);
@@ -3647,10 +3904,41 @@ async function fillField(ref, value, clear, pre) {
   if (kind === "spinbutton") return writeSpinButton(ref, target, value);
   if (kind === "number" && clear) return writeNumberInput(ref, target, value, shape);
   if (!clear) {
-    // Insert-at-cursor is the default and stays a straight write: no read-back,
-    // no settle delay, no note. Only a REPLACEMENT can silently do the wrong thing.
-    if (value) await insertValue(target, value);
-    return "";
+    // Insert-at-cursor is the default and stays a straight write for a SHORT
+    // value: no read-back, no settle delay, no note. A LONG one is the exception
+    // this path had to grow (LONG_WRITE_VERIFY_MIN): it is the length at which a
+    // virtualized editor starts losing text, and losing it silently.
+    if (!value) return "";
+    const sent = [...value].length;
+    if (sent < LONG_WRITE_VERIFY_MIN) {
+      await insertValue(target, value);
+      return "";
+    }
+    // Resolved BEFORE the write: the walk is a breadth-first descent through the
+    // live DOM, and a virtualized editor re-renders as it ingests — run it
+    // afterwards and it can land on a node the write never touched. Its `value`
+    // (the pre-write content) is deliberately unused: the check below is
+    // CONTAINS, not equals, because insert-at-cursor lands INSIDE whatever the
+    // field already held.
+    const resolved = await resolveValueNode(ref);
+    await insertValue(target, value);
+    // A dialog raised mid-write stopped the chunk loop, so the field holds a
+    // PREFIX of the value: reading it back would report the editor dropping text
+    // it was never given. The op tail reports the open dialog instead — and the
+    // read itself would hang on the frozen renderer anyway.
+    if (pendingDialogs.has(ref.tabId)) return "";
+    if (!resolved) return longWriteUnverifiedNote(sent, virtualized);
+    const after = await settledValue(resolved.ref);
+    if (after === null) return longWriteUnverifiedNote(sent, virtualized);
+    // Whitespace-insensitive: an editor re-indents, collapses a trailing newline
+    // or normalizes line endings as it ingests, and none of that is text loss.
+    if (normalizedForCompare(after).includes(normalizedForCompare(value))) return "";
+    // The proxy sentence is a GEOMETRY claim ("~1px, invisible"), so it rides
+    // isHiddenProxyInput alone — never the class-name flag, which says the
+    // element belongs to such an editor, not that this one is the sliver. The
+    // virtualized advice fires on this path regardless: a read-back missing the
+    // text IS the symptom, whatever the class attribute said.
+    return longWriteMismatchNote(sent, after, await isHiddenProxyInput(resolved.ref));
   }
   return clearAndWrite(ref, target, value, () => insertValue(target, value));
 }
@@ -4747,6 +5035,22 @@ async function performOp(message, stagingOrigin) {
   if (originExempt && debuggerUnreachable(tab.url)) {
     // A doomed attach buys nothing but its own error, so it is not attempted.
     escapeViaTabsApi = true;
+  } else if (message.op === "dialog_status") {
+    // BOUNDED for this op alone, and only because the attach is part of what it
+    // measures: ensureAttached's DOM/Accessibility/Page enables are all
+    // renderer-bound, so a native dialog blocking the renderer stalls THEM as
+    // surely as it stalls the probe below — and the attach is cold in exactly
+    // the field case (the MV3 worker idles out between turns, Chrome detaches
+    // with it, and the dialog opens in that gap). Unbounded, the op that exists
+    // to explain a hang would itself hang. Every other op is untouched and waits
+    // exactly as long as it did.
+    const attachOutcome = await probeWithin(ensureAttached(tab.id), DIALOG_PROBE_ATTACH_TIMEOUT_MS);
+    if (attachOutcome === PROBE_TIMED_OUT) {
+      return dialogProbeStuckResult(tab, DIALOG_PROBE_ATTACH_TIMEOUT_MS);
+    }
+    // An attach that ERRORED answered, so it is not the dialog signature: let it
+    // propagate exactly as it does for every other non-exempt op.
+    if (attachOutcome.error) throw attachOutcome.error;
   } else {
     try {
       await ensureAttached(tab.id);
@@ -4771,6 +5075,12 @@ async function performOp(message, stagingOrigin) {
 
   // An open JS dialog freezes the renderer: every page-touching command below
   // would hang. Surface the dialog instead — only handle_dialog may proceed.
+  //
+  // `dialog_status` is deliberately NOT excluded alongside it: this guard IS the
+  // answer to the probe whenever the dialog is tracked, and dialogBlockedResult
+  // reports the dialog's own type and message, which is strictly more than the
+  // probe branch below could say. The branch therefore only ever runs for the
+  // case the event tracking cannot see (a dialog that opened before we attached).
   if (message.op !== "handle_dialog" && pendingDialogs.has(tab.id)) {
     return dialogBlockedResult(tab);
   }
@@ -4972,6 +5282,47 @@ async function performOp(message, stagingOrigin) {
       ok: true,
       storage,
       storageKind: type,
+      url: tab.url || "",
+      title: tab.title || "",
+      tabs: (await groupedTabs()).map(describeTab),
+    };
+  }
+
+  if (message.op === "dialog_status") {
+    // Field case (Confluence, 2026-08-28): a draft-restore dialog opened before
+    // the bridge attached to the tab, so it never raised
+    // Page.javascriptDialogOpening and pendingDialogs stayed empty. Every click
+    // failed, none of them said why, and the agent could only INFER the dialog
+    // from the pattern of failures. This op is the missing question — and it is
+    // side-effect free: no input, no navigation, no snapshot walk.
+    //
+    // The tracked dialog is already answered by the guard above, so reaching
+    // here means the maps say the page is clear and the only remaining evidence
+    // is whether the RENDERER answers at all. DOM.getDocument at depth 0 is the
+    // cheapest allowlisted call that needs the renderer: one node, no subtree,
+    // no page JS. A dialog blocks it exactly as it blocks a snapshot.
+    const outcome = await probeWithin(
+      sendCdp({ tabId: tab.id }, "DOM.getDocument", { depth: 0 }),
+      DIALOG_PROBE_TIMEOUT_MS,
+    );
+    // No `tabs` on the two non-answering paths: chrome.tabs data would be
+    // truthful (it is browser-process state, not the page's), but a result that
+    // lists tabs reads as a page the bridge is talking to normally, which is the
+    // very impression this branch exists to correct.
+    if (outcome === PROBE_TIMED_OUT) return dialogProbeStuckResult(tab, DIALOG_PROBE_TIMEOUT_MS);
+    if (outcome.error) {
+      return {
+        ok: true,
+        note: dialogProbeFailedNote(outcome.error),
+        url: tab.url || "",
+        title: tab.title || "",
+      };
+    }
+    // Identity only, like select_tab: a probe is not a READ, and returning a
+    // snapshot here would make asking about a dialog cost a full page walk.
+    return {
+      ok: true,
+      note: DIALOG_PROBE_CLEAR_NOTE,
       url: tab.url || "",
       title: tab.title || "",
       tabs: (await groupedTabs()).map(describeTab),

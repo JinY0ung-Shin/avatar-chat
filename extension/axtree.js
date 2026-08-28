@@ -1117,9 +1117,16 @@ export function ariaSortByBackendId(document, strings) {
 }
 
 /**
- * Most AX-invisible clickables one snapshot lists. The section exists to make a
- * drawn grid reachable, not to re-describe the page: past this many the useful
- * answer is a narrower view, which is what the truncation notice says.
+ * Most LINES the AX-invisible clickable section prints. The section exists to
+ * make a drawn grid reachable, not to re-describe the page: past this many the
+ * useful answer is a narrower view, which is what the truncation notice says.
+ *
+ * A line is not always an element: since grouping (issue #62) a run of
+ * interchangeable elements spends ONE line on a summary, so the section now
+ * covers far more of the page inside the same budget. What the selection walk
+ * may COLLECT is a separate, larger cap owned by the caller
+ * (EXTRA_CLICKABLE_COLLECT_MAX in background.js) — grouping cannot summarize
+ * what it was never handed.
  */
 export const EXTRA_CLICKABLE_MAX = 40;
 
@@ -1479,6 +1486,98 @@ export function extraClickables(document, strings, opts) {
     })),
     more: outermost.length - kept.length,
   };
+}
+
+/**
+ * Members one signature needs before its bucket collapses into a summary. Three
+ * of a kind is a page having three of something; four is a PATTERN, and past
+ * that the list stops describing the page and starts burying it. Kept above
+ * EXTRA_CLICKABLE_GROUP_HEAD so a collapse always folds at least two elements —
+ * a summary standing in for one line would cost a line to save none.
+ */
+const EXTRA_CLICKABLE_GROUP_MIN = 4;
+
+/**
+ * Members of a collapsing bucket that still print individually, with their uids.
+ * TWO, not one: a single example reads as "the one td", while two make the
+ * repetition visible AND leave a second uid to act on if the first is stale.
+ * Exported because the summary line background.js renders says "more like the N
+ * above", and a hardcoded 2 there would drift the moment this changes.
+ */
+export const EXTRA_CLICKABLE_GROUP_HEAD = 2;
+
+/**
+ * Collapse repeated same-kind entries in the AX-invisible clickable section, so
+ * the section's line budget is spent on DISTINCT controls.
+ *
+ * Field case (issue #62): a Confluence editor snapshot listed 128+ table cells
+ * as clickables; the 40-line cap then cut off the custom toolbar controls the
+ * section exists to surface. Every one of those cells was individually
+ * addressable and utterly interchangeable — the agent needed to know they exist
+ * and what they are, not to receive 128 uids for them.
+ *
+ * SIGNATURE is the item's DOM hint with its `#id` segment removed
+ * (`td#c12.confluenceTd` → `td.confluenceTd`), because the id is exactly the
+ * part that differs between two instances of one repeated element. Only the
+ * FIRST `#` is stripped: `hintOf` writes the id straight after the tag, so that
+ * is the id, and a class token containing a literal `#` keeps its own text. An
+ * item whose signature comes out EMPTY (no hint, or a hint that is nothing but
+ * an id) never groups — with nothing to name the kind by, a summary line could
+ * not say what it stood for.
+ *
+ * `limit` is a cap on PRINTED LINES, and item lines and summary lines both count
+ * against it: a summary is a line the reader pays for like any other.
+ *
+ * Returns `{ units, omitted }`. A unit is `{ kind: "item", item }` — printed and
+ * minted exactly as before — or `{ kind: "group", signature, count }`, an
+ * UNMINTED summary standing in for `count` members beyond the printed head.
+ * `omitted` is every element the limit cut, with a dropped summary contributing
+ * the members it stood for: this file does not cap silently, so an element that
+ * existed and is not on a line has to be inside somebody's count.
+ *
+ * Pure and dependency-free (input order is document order; nothing is read back
+ * from the page), so tests/browser-axtree.test.ts covers it in the always-run
+ * suite.
+ */
+export function groupClickableItems(items, limit) {
+  const list = Array.isArray(items) ? items : [];
+  const cap = Math.max(0, Math.trunc(Number(limit ?? EXTRA_CLICKABLE_MAX)) || 0);
+  const signatures = list.map((item) => String(item?.hint ?? "").replace(/#[^.]*/, ""));
+  /** signature -> how many items carry it, so a bucket's size is known up front. */
+  const sizeOf = new Map();
+  for (const signature of signatures) {
+    if (signature) sizeOf.set(signature, (sizeOf.get(signature) || 0) + 1);
+  }
+  const units = [];
+  /** signature -> members walked so far, which is what decides head vs folded. */
+  const seen = new Map();
+  for (let at = 0; at < list.length; at += 1) {
+    const signature = signatures[at];
+    const size = signature ? sizeOf.get(signature) : 0;
+    // Under the threshold, or unsigned: printed exactly as it always was, in its
+    // own document position.
+    if (!signature || size < EXTRA_CLICKABLE_GROUP_MIN) {
+      units.push({ kind: "item", item: list[at] });
+      continue;
+    }
+    const rank = seen.get(signature) || 0;
+    seen.set(signature, rank + 1);
+    if (rank >= EXTRA_CLICKABLE_GROUP_HEAD) continue; // folded into the summary below
+    units.push({ kind: "item", item: list[at] });
+    // Right after the LAST printed head, so the summary sits where its members
+    // are rather than at the end of a section they are scattered through.
+    if (rank === EXTRA_CLICKABLE_GROUP_HEAD - 1 && size > EXTRA_CLICKABLE_GROUP_HEAD) {
+      units.push({ kind: "group", signature, count: size - EXTRA_CLICKABLE_GROUP_HEAD });
+    }
+  }
+  let omitted = 0;
+  for (let at = cap; at < units.length; at += 1) {
+    const unit = units[at];
+    // A summary the limit cut takes its whole bucket's tail down with it, so it
+    // contributes the members it stood for — not one line.
+    omitted += unit.kind === "group" ? unit.count : 1;
+  }
+  return { units: units.slice(0, cap), omitted };
 }
 
 /**

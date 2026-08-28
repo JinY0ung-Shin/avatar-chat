@@ -84,6 +84,8 @@ export interface BridgeOperation {
     | "hover"
     | "navigate_back"
     | "handle_dialog"
+    /** Pure status read: is a JS dialog open in the attached tab? Carries no other field. */
+    | "dialog_status"
     | "wait_for"
     | "read_text"
     | "read_cookies"

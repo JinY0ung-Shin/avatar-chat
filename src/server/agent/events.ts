@@ -298,6 +298,10 @@ export interface BrowserRequest {
     | "hover"
     | "navigate_back"
     | "handle_dialog"
+    // Pure STATUS read of the tab's dialog state, carrying NO other field:
+    // answering a dialog that isn't open is an error, so handle_dialog with no
+    // `accept` asks whether one is open at all instead of guessing.
+    | "dialog_status"
     | "wait_for"
     | "read_text"
     | "read_cookies"

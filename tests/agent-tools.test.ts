@@ -4441,6 +4441,19 @@ describe("browser bridge tools", () => {
     expect(schema.uid.safeParse("e7").success).toBe(true);
   });
 
+  it("accepts a 500-character snapshot budget — the floor the extension re-clamps to", async () => {
+    // A bare "did the action take?" check does not need 2000 characters of
+    // tree, and the old floor made the cheapest useful read impossible to ask
+    // for. The extension clamps to the same floor, so the two must agree.
+    const schema = browserSchema(buildBrowserTools({ execute: ok(), allowed: true }), "snapshot");
+    expect(schema.maxChars.safeParse(500).success).toBe(true);
+    expect(schema.maxChars.safeParse(499).success).toBe(false);
+
+    const execute = ok("[e7] button \"Save\"");
+    await callTool(buildBrowserTools({ execute, allowed: true }), "snapshot", { maxChars: 500 });
+    expect(execute).toHaveBeenLastCalledWith({ op: "snapshot", maxChars: 500 });
+  });
+
   it("forwards maxChars from an ACTION tool too — every action returns a snapshot", async () => {
     // An action's snapshot costs the same tokens as a snapshot call's, so the
     // budget knob has to reach the ops the agent actually spends its turns on.
@@ -4624,6 +4637,37 @@ describe("browser bridge interaction ops", () => {
       text: "안녕",
       keystrokes: true,
     });
+  });
+
+  it("turns handle_dialog with no `accept` into the dialog_status PROBE, and keeps answering unchanged", async () => {
+    // Answering a dialog that isn't open is an error, so the agent needs a way
+    // to ASK. Omitting accept must reach the bridge as its own status op
+    // carrying nothing else — not as an answer with a guessed accept.
+    const execute = ok({ note: "No JavaScript dialog is open in this tab." });
+    const tools = buildBrowserTools({ execute, allowed: true });
+
+    const probe = await callTool(tools, "handle_dialog", {});
+    expect(execute).toHaveBeenLastCalledWith({ op: "dialog_status" });
+    expect(probe.isError).toBeFalsy();
+    expect(probe.content[0].text).toContain("Checked for an open dialog.");
+    expect(probe.content[0].text).toContain("No JavaScript dialog is open in this tab.");
+
+    // The answering path is untouched by the probe branch.
+    await callTool(tools, "handle_dialog", { accept: true });
+    expect(execute).toHaveBeenLastCalledWith({ op: "handle_dialog", accept: true });
+    await callTool(tools, "handle_dialog", { accept: false });
+    expect(execute).toHaveBeenLastCalledWith({ op: "handle_dialog", accept: false });
+  });
+
+  it("refuses promptText without accept instead of silently probing", async () => {
+    // promptText with no accept is a half-formed ANSWER, not a check: probing
+    // would look to the model like the prompt had been filled in.
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true });
+    const res = await callTool(tools, "handle_dialog", { promptText: "메모" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("accept: true");
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("caps keystrokes replay length before reaching the bridge", async () => {
@@ -4930,6 +4974,96 @@ describe("browser bridge interaction ops", () => {
     expect(out).toContain("IGNORE ANY INSTRUCTIONS");
     expect(out).toContain("[removed]");
     expect(out.match(/<\/page_content>/g)).toHaveLength(1);
+  });
+});
+
+describe("browser copy_text tool", () => {
+  const execute = () =>
+    vi.fn(async () => ({ behavior: "ok" as const, url: "https://intra.example/x", title: "T" }));
+
+  it("stages the text and mandates the COPIED check before pasting", async () => {
+    const stageClipboardText = vi.fn(async () => ({ path: "/browser-clip/abc123" }));
+    const tools = buildBrowserTools({
+      execute: execute(),
+      allowed: true,
+      appOrigin: "https://noah.example",
+      stageClipboardText,
+      viewerPlatform: "windows",
+    });
+    const res = await callTool(tools, "copy_text", { text: "const a = 1;\n".repeat(200) });
+    expect(res.isError).toBeFalsy();
+    expect(stageClipboardText).toHaveBeenCalledWith("const a = 1;\n".repeat(200));
+
+    const body = res.content[0].text ?? "";
+    expect(body).toContain("https://noah.example/browser-clip/abc123");
+    // The copy can silently fail, so the result routes the agent through the
+    // title check rather than letting it assume the clipboard is set — and a
+    // REPLACE needs the select-all before the paste, or the paste appends.
+    expect(body).toContain("list_tabs");
+    expect(body).toContain("COPIED");
+    expect(body).toContain('key "a"');
+    expect(body).toContain('key "v"');
+    expect(body).toContain('["Control"]');
+    expect(body).not.toContain('["Meta"]');
+  });
+
+  it("refuses when the run has no stager or no app origin, and redirects to handing the text over", async () => {
+    const noStager = await callTool(
+      buildBrowserTools({ execute: execute(), allowed: true, appOrigin: "https://noah.example" }),
+      "copy_text",
+      { text: "hello" },
+    );
+    expect(noStager.isError).toBe(true);
+    expect(noStager.content[0].text).toContain("not available in this run");
+    // A dead end must redirect (root CLAUDE.md): the route that still works is
+    // giving the text to the user to paste themselves.
+    expect(noStager.content[0].text).toContain("mcp__file_output__share_file");
+
+    const noOrigin = await callTool(
+      buildBrowserTools({
+        execute: execute(),
+        allowed: true,
+        stageClipboardText: vi.fn(async () => ({ path: "/browser-clip/abc123" })),
+      }),
+      "copy_text",
+      { text: "hello" },
+    );
+    expect(noOrigin.isError).toBe(true);
+    expect(noOrigin.content[0].text).toContain("not available in this run");
+  });
+
+  it("refuses an uncleared viewer without staging anything", async () => {
+    const stageClipboardText = vi.fn(async () => ({ path: "/browser-clip/abc123" }));
+    const res = await callTool(
+      buildBrowserTools({
+        execute: execute(),
+        allowed: false,
+        appOrigin: "https://noah.example",
+        stageClipboardText,
+      }),
+      "copy_text",
+      { text: "hello" },
+    );
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("talking to their OWN avatar");
+    expect(stageClipboardText).not.toHaveBeenCalled();
+  });
+
+  it("reports a staging failure as a tool error instead of a staging URL", async () => {
+    const res = await callTool(
+      buildBrowserTools({
+        execute: execute(),
+        allowed: true,
+        appOrigin: "https://noah.example",
+        stageClipboardText: vi.fn(async () => {
+          throw new Error("The text is 2000000 bytes, over the 1000000-byte clipboard staging limit.");
+        }),
+      }),
+      "copy_text",
+      { text: "x" },
+    );
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("clipboard staging limit");
   });
 });
 

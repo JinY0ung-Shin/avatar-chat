@@ -1512,7 +1512,7 @@ describe("browser-bridge relay (onBrowser)", () => {
     expect(audit.detail).not.toContain("token=abc123");
   }, LIVE);
 
-  it("keeps snapshot/wait_for out of the audit trail and records unknown/unparseable urls", async () => {
+  it("keeps snapshot/wait_for/dialog_status out of the audit trail and records unknown/unparseable urls", async () => {
     const { store, app } = boot();
     const owner = request.agent(app);
     const signupRes = await signup(owner, "bridgeaudit").expect(201);
@@ -1520,10 +1520,12 @@ describe("browser-bridge relay (onBrowser)", () => {
     const cookie = cookieOf(signupRes);
 
     H.impl = async (_req, _pr, config, _store, events) => {
-      // Both fire between every step, so auditing them would bury the rows an
-      // admin actually wants.
+      // The first two fire between every step and the third is a pure status
+      // read the agent makes when it is confused — auditing any of them would
+      // bury the rows an admin actually wants.
       await events.onBrowser!({ op: "snapshot" });
       await events.onBrowser!({ op: "wait_for", text: "완료", timeoutS: 5 });
+      await events.onBrowser!({ op: "dialog_status" });
       await events.onBrowser!({ op: "click", uid: "u-1" });
       await events.onBrowser!({ op: "hover", uid: "u-2" });
       return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "ok" };
@@ -1542,6 +1544,7 @@ describe("browser-bridge relay (onBrowser)", () => {
     const actions = store.listAudit(ownerId, true).map((e) => e.action);
     expect(actions).not.toContain("browser_snapshot");
     expect(actions).not.toContain("browser_wait_for");
+    expect(actions).not.toContain("browser_dialog_status");
     expect(actions).toContain("browser_click");
     expect(actions).toContain("browser_hover");
     const rows = store.listAudit(ownerId, true);

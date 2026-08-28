@@ -2184,6 +2184,7 @@ function handleBrowserOp(paneId: string, data: any): void {
     read_storage: "브라우저 저장소를 읽는 중…",
     screenshot: "브라우저 화면을 캡처하는 중…",
     handle_dialog: "브라우저 대화상자에 응답하는 중…",
+    dialog_status: "브라우저 대화상자 상태를 확인하는 중…",
     list_tabs: "브라우저 탭을 확인하는 중…",
     new_tab: "새 탭을 여는 중…",
     select_tab: "탭을 전환하는 중…",

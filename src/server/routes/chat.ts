@@ -2049,13 +2049,20 @@ export async function executeChatTurn(
                 : undefined;
             // Audit every ACTION against the user's live session, plus the
             // DELIBERATE reads (screenshot/read_text/read_cookies — the
-            // exfiltration surface an admin wants rows for). `snapshot` and
-            // `wait_for` are skipped: both fire between every step, so they
-            // would bury the rows that matter. read_cookies logs the host +
-            // cookie NAMES + count only — NEVER a cookie value.
+            // exfiltration surface an admin wants rows for). `snapshot`,
+            // `wait_for` and `dialog_status` are skipped: the first two fire
+            // between every step, and the third is a pure status read the agent
+            // makes when it is confused about why a page won't respond — all
+            // three would bury the rows that matter and none of them touches the
+            // page. read_cookies logs the host + cookie NAMES + count only —
+            // NEVER a cookie value.
             // URLs are scrubbed of userinfo and query string — an audit row
             // is admin-visible and a query string routinely carries tokens.
-            if (requestData.op !== "snapshot" && requestData.op !== "wait_for") {
+            if (
+              requestData.op !== "snapshot" &&
+              requestData.op !== "wait_for" &&
+              requestData.op !== "dialog_status"
+            ) {
               audit({
                 action: `browser_${requestData.op}`,
                 detail: [

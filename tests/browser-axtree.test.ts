@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // Kept on ONE line: @ts-expect-error only covers the line after it, and the
 // error is raised on the module specifier — the LAST line of a wrapped import.
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, ariaSortByBackendId, axValueAnswer, clearFailed, sliderPlan } from "../extension/axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, groupClickableItems, ariaSortByBackendId, axValueAnswer, clearFailed, sliderPlan } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -2151,6 +2151,152 @@ describe("extraClickables", () => {
       extraClickables({ nodes: {}, layout: {} }, null, { mintedBackendIds: new Set(), viewport: VIEWPORT }),
     ).toEqual(empty);
     expect(extraClickables({ nodes: {}, layout: {} }, [], {})).toEqual(empty);
+  });
+});
+
+type ClickableUnit =
+  | { kind: "item"; item: ExtraClickable }
+  | { kind: "group"; signature: string; count: number };
+type GroupedAnswer = { units: ClickableUnit[]; omitted: number };
+
+/** One collected clickable, as extraClickables hands them over. */
+const item = (backendNodeId: number, hint: string, label = ""): ExtraClickable => ({
+  backendNodeId,
+  label,
+  hint,
+});
+
+/** `n` cells of one Confluence-style table — same classes, ids that differ. */
+const cells = (count: number, from = 1) =>
+  Array.from({ length: count }, (_, at) => item(from + at, `td#c${from + at}.confluenceTd`));
+
+const grouped = (items: ExtraClickable[], limit: number) =>
+  groupClickableItems(items, limit) as GroupedAnswer;
+
+/** What a rendered section would look like, so order assertions read like output. */
+const shapeOf = (answer: GroupedAnswer) =>
+  answer.units.map((unit) =>
+    unit.kind === "group" ? `group:${unit.signature}×${unit.count}` : `item:${unit.item.backendNodeId}`,
+  );
+
+describe("groupClickableItems", () => {
+  it("leaves a bucket under the threshold listed individually", () => {
+    // Three of a kind is a page having three of something. Grouping them would
+    // spend a summary line to save one, and cost two uids doing it.
+    const answer = grouped([...cells(3), item(90, "button#save.primary")], 40);
+    expect(shapeOf(answer)).toEqual(["item:1", "item:2", "item:3", "item:90"]);
+    expect(answer.omitted).toBe(0);
+  });
+
+  it("collapses a six-member bucket into two heads and one summary", () => {
+    const answer = grouped(cells(6), 40);
+    expect(shapeOf(answer)).toEqual(["item:1", "item:2", "group:td.confluenceTd×4"]);
+    expect(answer.omitted).toBe(0);
+  });
+
+  it("never groups items whose signature would be empty", () => {
+    // A hint that is nothing but an id (or nothing at all) leaves no kind to
+    // name, and a summary that cannot say what it stands for is worse than the
+    // lines it replaced.
+    const answer = grouped(
+      [item(1, "#a"), item(2, "#b"), item(3, "#c"), item(4, "#d"), item(5, ""), item(6, "")],
+      40,
+    );
+    expect(shapeOf(answer)).toEqual(["item:1", "item:2", "item:3", "item:4", "item:5", "item:6"]);
+    expect(answer.omitted).toBe(0);
+  });
+
+  it("keeps document order, with each summary sitting after its own heads", () => {
+    // Two interleaved runs: the summary belongs where its members are, not at
+    // the end of a section they are scattered through.
+    const answer = grouped(
+      [
+        item(1, "td#c1.confluenceTd"),
+        item(2, "td#c2.confluenceTd"),
+        item(10, "div#tool-a.btn"),
+        item(3, "td#c3.confluenceTd"),
+        item(11, "div#tool-b.btn"),
+        item(4, "td#c4.confluenceTd"),
+        item(12, "div#tool-c.btn"),
+        item(13, "div#tool-d.btn"),
+        item(5, "td#c5.confluenceTd"),
+      ],
+      40,
+    );
+    expect(shapeOf(answer)).toEqual([
+      "item:1",
+      "item:2",
+      "group:td.confluenceTd×3",
+      "item:10",
+      "item:11",
+      "group:div.btn×2",
+    ]);
+    expect(answer.omitted).toBe(0);
+  });
+
+  it("bounds TOTAL units by the limit and counts a dropped summary as its members", () => {
+    // Six units would print: two heads, the summary standing for 4 cells, then
+    // three buttons. A limit of 3 keeps the heads and the summary; a limit of 2
+    // cuts the summary itself, whose 4 members must land in `omitted` rather
+    // than vanish — a cap the agent cannot see reads as the element not existing.
+    const source = [...cells(6), item(90, "button#a.tool"), item(91, "button#b.tool"), item(92, "button#c.tool")];
+    expect(shapeOf(grouped(source, 6))).toEqual([
+      "item:1",
+      "item:2",
+      "group:td.confluenceTd×4",
+      "item:90",
+      "item:91",
+      "item:92",
+    ]);
+    expect(grouped(source, 6).omitted).toBe(0);
+
+    const tight = grouped(source, 3);
+    expect(shapeOf(tight)).toEqual(["item:1", "item:2", "group:td.confluenceTd×4"]);
+    expect(tight.omitted).toBe(3); // the three buttons
+
+    const tighter = grouped(source, 2);
+    expect(shapeOf(tighter)).toEqual(["item:1", "item:2"]);
+    expect(tighter.omitted).toBe(7); // 4 folded cells + 3 buttons
+
+    // The doctrine, stated as arithmetic: printed items + omitted + everything a
+    // surviving summary covers accounts for every element that came in.
+    for (const limit of [0, 1, 2, 3, 4, 9]) {
+      const answer = grouped(source, limit);
+      const covered = answer.units.reduce(
+        (sum, unit) => sum + (unit.kind === "group" ? unit.count : 1),
+        0,
+      );
+      expect(covered + answer.omitted).toBe(source.length);
+    }
+  });
+
+  it("derives the signature by dropping the #id segment alone", () => {
+    // The id is exactly the part that differs between two instances of one
+    // repeated element; the tag and classes are what say they are the same kind.
+    const answer = grouped(
+      [
+        item(1, "td#c12.confluenceTd"),
+        item(2, "td#c13.confluenceTd"),
+        item(3, "td#c14.confluenceTd"),
+        item(4, "td#c15.confluenceTd"),
+        // Same id-less shape, no id at all: still the same kind, still grouped.
+        item(5, "td.confluenceTd"),
+      ],
+      40,
+    );
+    expect(shapeOf(answer)).toEqual(["item:1", "item:2", "group:td.confluenceTd×3"]);
+
+    // A differing CLASS is a different kind, id or no id.
+    const mixed = grouped(
+      [item(1, "td#c1.a"), item(2, "td#c2.a"), item(3, "td#c3.a"), item(4, "td#c4.b")],
+      40,
+    );
+    expect(shapeOf(mixed)).toEqual(["item:1", "item:2", "item:3", "item:4"]);
+  });
+
+  it("answers empty rather than throwing on a missing list", () => {
+    expect(groupClickableItems(null, 40)).toEqual({ units: [], omitted: 0 });
+    expect(groupClickableItems([], 40)).toEqual({ units: [], omitted: 0 });
   });
 });
 

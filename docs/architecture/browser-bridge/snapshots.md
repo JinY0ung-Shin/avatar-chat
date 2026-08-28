@@ -28,7 +28,12 @@
   `MAX_CHARS_SCHEMA`) and the extension's `op === "snapshot"` gate had to move. `uid` renders only that
   element's subtree (a frame header's uid scopes into that frame) and a dead uid raises read_text's
   re-snapshot error, not a silent whole-page fallback. `maxChars` tightens `capSnapshot`'s budget and is
-  RE-CLAMPED extension-side to [2000, 30000], so the wire value can only ever shrink the cap.
+  RE-CLAMPED extension-side to [500, 30000] (0.24.0; the floor was 2000 before — issue #63: an agent
+  steps through a long task paying this budget on EVERY action, and the smallest useful confirmation
+  is a few uid lines, not two thousand characters), so the wire value can only ever shrink the cap.
+  The two floors move in LOCKSTEP (`MAX_CHARS_SCHEMA` server-side, `SNAPSHOT_CHARS_MIN`
+  extension-side): an old build re-clamps a 500 up to 2000 — handing back four times what was asked
+  for, a degrade, not a break.
   `wait_for` skips the action tail's snapshot read entirely (its own match loop still walks uncapped):
   one yes/no answer used to cost ~25 KB of page walk. Old builds ignore all of this and keep returning
   full snapshots — a degrade, not a break, which is why `BROWSER_EXTENSION_MIN_COMPATIBLE` stays 0.6.0.
@@ -181,8 +186,18 @@
   that only calls `stopPropagation` and wraps the "Close" strip that actually dismisses it, so pruning the
   strip left a page with no route to unblock it at all (the click UNDERNEATH is correctly refused). The
   area test is what keeps the tile-plus-overlay case at one uid, and root delegation is untouched either
-  way (there the tiles have no listener of their own). Capped at 40 in document order with an explicit "N more"
-  atom when it truncates, never silently: a cap the agent cannot see is indistinguishable from the
+  way (there the tiles have no listener of their own). Since 0.24.0 the section runs TWO budgets (issue #62: 128
+  interchangeable Confluence table cells crowded the editor's real controls out of the old 40-element
+  cap): the walk COLLECTS up to 200 candidates (`EXTRA_CLICKABLE_COLLECT_MAX`, background.js — still
+  zero CDP round trips per item), and `groupClickableItems` (`axtree.js`, pure, unit-tested) decides
+  what earns one of the 40 PRINTED lines — a run of ≥ 4 elements sharing a SIGNATURE (the DOM hint
+  minus its `#id` segment, `td#c12.confluenceTd` → `td.confluenceTd`; an empty signature never
+  groups, there would be nothing to name the kind by) prints its first 2 with uids plus ONE unminted
+  `… N more like the 2 above (td.confluenceTd)` summary line placed right after them, so the table
+  costs 3 lines instead of the whole cap. Only PRINTED items mint uids (the rule the old cap already
+  followed), and the trailing "N more" atom counts BOTH what the collection walk left behind and what
+  the print budget dropped — a summary the limit cut contributes the members it stood for — never
+  silently: a cap the agent cannot see is indistinguishable from the
   element not existing, which is the very bug this section fixes. Label and hint are derived PURELY from
   the DOMSnapshot payload already in hand (aria-label → title → descendant `img` alt → descendant text;
   hint = `tag#id.classes`), so the whole section costs ZERO extra CDP round trips beyond that one
