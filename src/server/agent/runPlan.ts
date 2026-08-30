@@ -76,7 +76,10 @@ import {
   effectiveMcpToolGroups,
   type McpToolGroupId,
 } from "../../shared/mcpToolGroups.js";
-import { UNUSED_SDK_BUILTIN_TOOLS } from "../../shared/sdkToolPresentation.js";
+import {
+  SDK_ELEVATED_BUILTIN_TOOLS,
+  UNUSED_SDK_BUILTIN_TOOLS,
+} from "../../shared/sdkToolPresentation.js";
 import {
   disallowedEntriesForPolicy,
   isAgentTeamsDisabled,
@@ -1308,6 +1311,16 @@ export async function buildAgentRunPlan(
       "Skill",
       "TodoWrite",
       ...TASK_ORCHESTRATION_TOOLS,
+      // Silent auto-deny workaround: when the hook blanket-allows every tool
+      // anyway (elevated + autoApprove — the same condition as its
+      // canRunElevatedTools fast path), pre-allow the gated built-ins by RULE
+      // so they never enter the CLI's ask path — 2.1.222 cancels that path in
+      // turns where queued input (a background task-notification) arrived and
+      // words it as a user refusal. Hook denies still override these rules.
+      // See SDK_ELEVATED_BUILTIN_TOOLS for the full account.
+      ...(elevated && (!headless || allowHeadlessTools) && autoApprove
+        ? SDK_ELEVATED_BUILTIN_TOOLS
+        : []),
     ],
     // Drop full-CLI harness tools we never use from the advertised tool list.
     // `allowedTools` only auto-approves; it does NOT restrict what the CLI offers,

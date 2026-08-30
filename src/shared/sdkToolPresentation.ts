@@ -48,6 +48,36 @@ export const SDK_HIDDEN_ACTIVITY_TOOLS = [
 ] as const;
 
 /**
+ * The permission-gated built-ins an ELEVATED viewer may use — the tools the
+ * PreToolUse hook blanket-allows once `elevated && autoApprove` holds, i.e.
+ * every live chat and owner routine today. Named here so runPlan can ALSO list
+ * them in `allowedTools` for exactly those runs: the bundled CLI (2.1.222)
+ * cancels an in-flight permission evaluation when queued input (typically a
+ * background <task-notification>) entered the same turn and reports the
+ * cancellation as a USER REFUSAL ("The user doesn't want to take this action
+ * right now" / toolDenialKind: "cancelled") — the flaky silent auto-deny.
+ * Rule-allowed tools never enter that cancellable ask path, and a hook DENY
+ * still overrides an allowedTools rule, so the hook's guards (admin policy,
+ * active-repo git, bot write scope, read-only viewers) keep working. Unknown
+ * names are harmless no-ops (same contract as UNUSED_SDK_BUILTIN_TOOLS), so
+ * both shell-kill spellings ride along. AskUserQuestion stays OFF this list:
+ * the hook intercepts it with a deny-carrying-answer, which must stay ahead
+ * of any rule.
+ */
+export const SDK_ELEVATED_BUILTIN_TOOLS = [
+  "Bash",
+  "BashOutput",
+  "KillShell",
+  "KillBash",
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+  "WebFetch",
+  "WebSearch",
+] as const;
+
+/**
  * Full-CLI harness tools the SDK/CLI advertises by default but that Noah Almighty
  * does NOT use: they're absent from `allowedTools`, duplicate an app feature
  * (Cron* vs. `mcp__system__*_routine`, PushNotification vs. `mcp__system__notify_user`,

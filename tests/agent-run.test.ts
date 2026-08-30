@@ -355,6 +355,53 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     expect(options.additionalDirectories).toBeUndefined();
   });
 
+  it("pre-allows the gated built-ins by rule exactly when the hook would blanket-allow them", async () => {
+    const { config, store, baseRequest } = setup();
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    // Owner live chat (elevated + autoApprove): the gated built-ins ride
+    // allowedTools so they never enter the CLI's cancellable ask path — 2.1.222
+    // cancels it in turns where a queued task-notification arrived and words
+    // the cancellation as a user refusal (the silent auto-deny flake).
+    await runAgentStream(baseRequest, [], config, store, makeEvents());
+    const allowed = sdkMock.calls[0].options.allowedTools as string[];
+    expect(allowed).toEqual(
+      expect.arrayContaining(["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch"]),
+    );
+    // The hook intercepts AskUserQuestion (deny-carrying-answer) — a rule
+    // allowing it would still be overridden, but it must never be listed.
+    expect(allowed).not.toContain("AskUserQuestion");
+
+    // Colleague (not elevated): the hook denies these tools, so no rule may allow them.
+    await runAgentStream(
+      { ...baseRequest, viewerUserId: "someone-else", viewerIsOwner: false },
+      [],
+      config,
+      store,
+      makeEvents(),
+    );
+    expect(sdkMock.calls[1].options.allowedTools as string[]).not.toContain("Bash");
+
+    // Restricted headless run (no allowHeadlessTools): read-only, same rule.
+    await runAgentStream({ ...baseRequest, headless: true }, [], config, store, makeEvents());
+    expect(sdkMock.calls[2].options.allowedTools as string[]).not.toContain("Bash");
+
+    // Owner routine that opted into headless tools (scheduler: autoApprove) keeps the rule.
+    await runAgentStream(
+      { ...baseRequest, headless: true, allowHeadlessTools: true },
+      [],
+      config,
+      store,
+      makeEvents(),
+    );
+    expect(sdkMock.calls[3].options.allowedTools as string[]).toContain("Bash");
+
+    // Elevated but NOT autoApprove: the interactive permission prompt is the
+    // gate, so the ask path must stay live and no rule may pre-allow.
+    await runAgentStream({ ...baseRequest, autoApprove: false }, [], config, store, makeEvents());
+    expect(sdkMock.calls[4].options.allowedTools as string[]).not.toContain("Bash");
+  });
+
   it("admin agent-teams toggle turns off the CLI flag AND the SendMessage tool", async () => {
     const { config, store, baseRequest } = setup();
     store.setToolSkillPolicy({ disabledTools: ["SendMessage"], disabledSkills: [] });
