@@ -80,10 +80,11 @@ export const SDK_ELEVATED_BUILTIN_TOOLS = [
 /**
  * Full-CLI harness tools the SDK/CLI advertises by default but that Noah Almighty
  * does NOT use: they're absent from `allowedTools`, duplicate an app feature
- * (Cron* vs. `mcp__system__*_routine`, PushNotification vs. `mcp__system__notify_user`,
- * Enter/ExitWorktree vs. `mcp__git_repo__open_repo`), or are interactive-CLI-only
- * (Workflow / Monitor / DesignSync / ClaudeDesign / ScheduleWakeup /
- * RemoteTrigger / ReportFindings / SendFeedback / ProposeSkills).
+ * (Cron* vs. `mcp__system__*_routine`, PushNotification/ReadNotifications vs.
+ * `mcp__system__notify_user`, Enter/ExitWorktree vs. `mcp__git_repo__open_repo`),
+ * or are interactive-CLI-only (Workflow / Monitor / DesignSync / ClaudeDesign /
+ * ScheduleWakeup / RemoteTrigger / ReportFindings / SendFeedback / ProposeSkills /
+ * ProposeGoal).
  * `SendMessage` is NOT here: it powers agent teams (SDK_TEAM_TOOLS) and an admin
  * can turn it off via the togglable-tool policy instead.
  * Fed to the SDK `disallowedTools` option so they're dropped from the advertised
@@ -107,6 +108,8 @@ export const UNUSED_SDK_BUILTIN_TOOLS = [
   "SendFeedback",
   "ClaudeDesign",
   "ProposeSkills",
+  "ProposeGoal",
+  "ReadNotifications",
 ] as const;
 
 export const SDK_TOOL_LABELS: Record<string, string> = {
@@ -133,11 +136,13 @@ export const SDK_TOOL_LABELS: Record<string, string> = {
   Monitor: "모니터링 시작",
   NotebookEdit: "노트북 편집",
   Projects: "프로젝트 지식",
+  ProposeGoal: "목표 제안",
   ProposeSkills: "스킬 제안",
   PushNotification: "푸시 알림",
   Read: "파일 읽기",
   ReadMcpResource: "MCP 리소스 읽기",
   ReadMcpResourceDir: "MCP 리소스 폴더 읽기",
+  ReadNotifications: "알림 확인",
   RefreshMcpTools: "MCP 도구 새로고침",
   RemoteTrigger: "원격 트리거",
   REPL: "REPL 실행",
