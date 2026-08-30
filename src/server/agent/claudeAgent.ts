@@ -51,16 +51,28 @@ import { buildAgentRunPlan } from "./runPlan.js";
 const agentLogger = logger.child({ module: "agent" });
 
 /**
- * Build the "streaming input" prompt for a turn that carries images: a single
- * SDK user message whose content is the full prompt text followed by one image
- * block per attachment. Yielding exactly one message and returning closes the
- * input stream, so the SDK runs a single turn (same as a string prompt). The
- * SDK's `query` is typed loosely here (`input: unknown`), so the SDKUserMessage
- * shape is constructed inline; `parent_tool_use_id: null` marks a top-level turn.
+ * Build the HELD-OPEN "streaming input" prompt for a live chat turn: a single
+ * SDK user message (the full prompt text + one image block per attachment),
+ * after which the generator PARKS on `closed` instead of returning. A prompt
+ * that ends — a plain string, or a generator that returns — makes the SDK close
+ * the CLI's stdin at the turn's FIRST `result` (`isSingleUserTurn`, and the
+ * bidirectional-needs wait when hooks/MCP servers are attached), and the CLI
+ * process exits with it, killing any still-RUNNING background task
+ * (`run_in_background` Bash) before it can wake the model — a task survived
+ * only when it settled before that first result. Keeping the generator pending
+ * keeps stdin open, so the CLI holds the session through the background phase
+ * and streams wake-up turns; `runClaudeAgent` resolves `closed` at a result
+ * boundary with no live background tasks (and on every attempt exit, so a
+ * failed run never leaks the parked promise). The SDK's `query` is typed
+ * loosely here (`input: unknown`), so the SDKUserMessage shape is constructed
+ * inline; `parent_tool_use_id: null` marks a top-level turn. The wire format is
+ * identical to the string path (the SDK writes a string prompt as this same
+ * stream-json user message), so `resume` and all `options` behave the same.
  */
-export async function* buildImageQueryPrompt(
+export async function* buildHeldOpenQueryPrompt(
   promptText: string,
   images: AgentImageInput[],
+  closed: Promise<void>,
 ): AsyncGenerator<Record<string, unknown>> {
   yield {
     type: "user",
@@ -82,6 +94,20 @@ export async function* buildImageQueryPrompt(
       ],
     },
   };
+  await closed;
+}
+
+/**
+ * Single-turn variant for HEADLESS turns that carry images: same message, but
+ * the generator returns immediately, so the SDK closes the CLI's stdin at the
+ * first result exactly like a string prompt. Headless runs have no events sink
+ * to deliver background wake-ups, so the prompt single-turn teardown is wanted.
+ */
+export async function* buildImageQueryPrompt(
+  promptText: string,
+  images: AgentImageInput[],
+): AsyncGenerator<Record<string, unknown>> {
+  yield* buildHeldOpenQueryPrompt(promptText, images, Promise.resolve());
 }
 
 // HTTP statuses that indicate a transient model/server-side condition worth
@@ -336,11 +362,12 @@ export async function runClaudeAgent(
   };
   setSystemPrompt();
 
-  // The user prompt is normally a plain string. When the turn carries image
-  // attachments we instead pass a single-message async-iterable ("streaming
-  // input" mode) whose content is the user prompt text + image blocks — the only
-  // way to feed the model images. All `options` (resume/hooks/mcpServers/model)
-  // work identically in both modes, so text-only turns keep the string path.
+  // The user prompt text. STREAMING (live chat) turns wrap it in the held-open
+  // generator built per attempt below, so the CLI session can outlive the first
+  // result while background tasks run. HEADLESS runs keep the single-turn
+  // prompts: a plain string, or — when the turn carries image attachments — a
+  // single-message async-iterable (the only way to feed the model images). All
+  // `options` (resume/hooks/mcpServers/model) work identically in every mode.
   let promptText = buildUserPrompt(promptRequest);
 
   // One-shot guard for the stale-resume self-heal below: if the SDK can't find
@@ -398,10 +425,25 @@ export async function runClaudeAgent(
     contextUsage = undefined;
     segmentAssistantStart = 0;
     segmentDeltaStart = 0;
-    // Build the prompt fresh each attempt: the image path is a single-use async
-    // generator, so a retry needs a new one (the string path is reused as-is).
-    const queryPrompt =
-      request.images && request.images.length > 0
+    // Build the prompt fresh each attempt: the generator paths are single-use,
+    // so a retry needs a new one (the headless string path is reused as-is).
+    // Streaming turns ALWAYS go through the held-open generator — an input that
+    // ends makes the SDK close the CLI's stdin at the first result, killing
+    // still-running background tasks with the process (see
+    // buildHeldOpenQueryPrompt). The gate resolves at a task-free result
+    // boundary (below) and in this attempt's `finally`, so normal turns still
+    // tear down promptly while a live background phase keeps the session open
+    // for wake-up turns (delivered via onTurnResult → bg_message).
+    let releaseHeldInput: (() => void) | undefined;
+    const queryPrompt = streaming
+      ? buildHeldOpenQueryPrompt(
+          promptText,
+          request.images ?? [],
+          new Promise<void>((resolve) => {
+            releaseHeldInput = resolve;
+          }),
+        )
+      : request.images && request.images.length > 0
         ? buildImageQueryPrompt(promptText, request.images)
         : promptText;
 
@@ -468,6 +510,17 @@ export async function runClaudeAgent(
           }
         }
 
+        if (dispatched.kind === "result" && state.backgroundTasks.size === 0) {
+          // Task-free result boundary → let the held-open input generator
+          // return: the SDK then closes the CLI's stdin and the process winds
+          // down. A task notification already queued by a settle racing this
+          // close is not lost — the CLI drains queued turns after stdin EOF
+          // (that drain is how tasks that settle mid-turn ever reported at
+          // all). With live tasks the input stays open and the session
+          // survives to run them; their wake-up turns end in another result,
+          // which closes here once the task set is empty.
+          releaseHeldInput?.();
+        }
         if (dispatched.kind === "result" && events?.onTurnResult) {
           // Result boundary: hand the host this segment's text (chunks since
           // the previous boundary; the boundary's own resultText is only a
@@ -591,6 +644,12 @@ export async function runClaudeAgent(
       );
       // No live viewer on a routine, but keep the channel consistent.
       events?.onStatus?.(`모델을 ${nextModel}(으)로 전환해 다시 시도 중…`);
+    } finally {
+      // Whatever ended this attempt — the normal `break`, an abort, an error,
+      // or a self-heal retry's `continue` — release the held-open input so the
+      // generator never leaks a parked promise (a crashed CLI can no longer be
+      // waiting on stdin, and a retry builds a fresh gate).
+      releaseHeldInput?.();
     }
   }
 

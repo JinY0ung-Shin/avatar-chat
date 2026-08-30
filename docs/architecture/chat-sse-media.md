@@ -71,10 +71,18 @@
   tool schemas entirely, but kills Bash background tasks too.)
 - **Background phase (`run_in_background` tasks outliving the visible reply).** A `query()` is NOT one
   model turn: with live background tasks (Bash `run_in_background` — subagent spawns are forced
-  foreground, see above) the SDK emits the first
-  `result` but KEEPS the process alive, wakes the model when a task settles (`task_notification`), and
-  streams follow-up turns, each ending in another `result`; the iterator only ends when everything
-  settled (empirically verified on SDK 0.3.220). Background-task state is **per-process** — a `resume`
+  foreground, see above) the CLI can emit the first
+  `result`, wake the model when a task settles (`task_notification`), and stream follow-up turns, each
+  ending in another `result` — **but ONLY while its stdin is open.** A prompt that ends — a plain
+  string (`isSingleUserTurn`), or a generator that returns when the run has hooks/MCP servers (the
+  bidirectional-needs wait) — makes SDK 0.3.222 call `endInput()` at the turn's FIRST result, and the
+  CLI exits with it, killing still-running tasks (a task "survived" only when it settled BEFORE that
+  result: the queued `task_notification` is drained even after stdin EOF — the root cause behind
+  2026-08-30's flaky wake-ups). So STREAMING turns feed the prompt through a HELD-OPEN generator
+  (`buildHeldOpenQueryPrompt`: yield the one user message, park on a gate; same wire format as a
+  string), and `runClaudeAgent` resolves the gate at a result boundary whose `LoopState.backgroundTasks`
+  is empty (plus in the attempt's `finally`, so aborts/errors never leak it); headless runs keep the
+  single-turn prompts. Background-task state is **per-process** — a `resume`
   in a new process cannot recover it, which is why the phase must ride the ORIGINAL run. Wiring:
   `background_tasks_changed` (level signal, REPLACE semantics) → `LoopState.backgroundTasks` +
   `onBackgroundTasks` → SSE `bg_tasks`; every `result` fires `onTurnResult` with the text SINCE the last
@@ -102,9 +110,11 @@
   Bubbles render from the pane's `localImages` (data URL, instant) then fall back to that serving URL on
   reload. **Client canvas resize loads the source via a `data:` URL (FileReader), NOT
   `URL.createObjectURL` — a `blob:` URL is blocked by the prod CSP, a prod-only trap.** **Feeding images
-  REQUIRES switching `sdk.query`'s `prompt` from a string to an `AsyncIterable<SDKUserMessage>` (text block
-  + image blocks) — `claudeAgent.ts` `buildImageQueryPrompt`, taken ONLY when `request.images?.length`;
-  text-only turns keep the unchanged string path. `resume` works in both modes.** Regenerate re-reads the
+  REQUIRES an `AsyncIterable<SDKUserMessage>` prompt (text block + image blocks). Streaming turns pass
+  an async-iterable ALWAYS (`buildHeldOpenQueryPrompt` — the background-phase keepalive above — which
+  simply includes the image blocks when `request.images?.length`); headless image turns use the
+  single-turn `buildImageQueryPrompt`, and headless text turns keep the plain string. `resume` works in
+  every mode.** Regenerate re-reads the
   prior user turn's stored attachments from disk (`readChatImages`). `express.json` limit was bumped
   3mb→40mb. Conversation delete sweeps the image dir (`deleteConversationImages`).
 - **Vision gating is PER-RUN, per-model-tier** (`modelVisionPolicy.ts`): effective vision =

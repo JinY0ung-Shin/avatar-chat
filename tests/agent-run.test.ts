@@ -181,6 +181,20 @@ function handleFrom(
   return handle;
 }
 
+/**
+ * Read the single user message's text block off a generator prompt (streaming
+ * turns pass the held-open generator; safe to consume after the run — its gate
+ * is released on attempt exit, and the mock never consumes the prompt itself).
+ */
+async function promptTextOf(prompt: unknown): Promise<string> {
+  const gen = prompt as AsyncGenerator<Record<string, unknown>>;
+  const first = await gen.next();
+  const message = (
+    first.value as { message?: { content?: Array<{ type?: string; text?: string }> } }
+  ).message;
+  return message?.content?.find((block) => block.type === "text")?.text ?? "";
+}
+
 /** A query handle that throws on iteration (optionally aborting a controller first). */
 function throwingHandle(error: unknown, opts: { abort?: AbortController } = {}): QueryHandle {
   async function* gen() {
@@ -719,10 +733,11 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     // First attempt carried resume; the self-heal dropped it for the retry.
     expect(sdkMock.calls[0].options.resume).toBe("sess-old");
     expect(sdkMock.calls[1].options.resume).toBeUndefined();
-    // The retry's prompt (text path, a string) now carries the stored history.
-    expect(typeof sdkMock.calls[1].prompt).toBe("string");
-    expect(sdkMock.calls[1].prompt as string).toContain("Earlier conversation history");
-    expect(sdkMock.calls[1].prompt as string).toContain("이전 질문");
+    // The retry's prompt (streaming → held-open generator) now carries the
+    // stored history in its single user message.
+    const retryPrompt = await promptTextOf(sdkMock.calls[1].prompt);
+    expect(retryPrompt).toContain("Earlier conversation history");
+    expect(retryPrompt).toContain("이전 질문");
     expect(response.text).toBe("resumed ok");
   });
 
@@ -867,7 +882,7 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     expect(sdkMock.calls).toHaveLength(2);
     expect(events.onThinkingReset).toHaveBeenCalledTimes(1);
     // The retry prompt carries the empty-turn nudge.
-    expect(sdkMock.calls[1].prompt as string).toContain("internal reasoning only");
+    expect(await promptTextOf(sdkMock.calls[1].prompt)).toContain("internal reasoning only");
     expect(response.text).toBe("recovered");
   });
 
@@ -921,6 +936,92 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     const prompt = sdkMock.calls[0].prompt as { [Symbol.asyncIterator]?: unknown };
     expect(typeof prompt[Symbol.asyncIterator]).toBe("function");
     expect(response.text).toBe("saw the image");
+  });
+
+  it("feeds streaming turns through a held-open generator released at a task-free result", async () => {
+    const { config, store, baseRequest } = setup();
+    const events = makeEvents();
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    const response = await runAgentStream(baseRequest, [], config, store, events);
+    expect(response.text).toBe("ok");
+
+    // Text-only streaming turns now ALSO pass an async-iterable prompt: a string
+    // prompt makes the SDK close the CLI's stdin at the first result
+    // (isSingleUserTurn), which kills still-running background tasks with the
+    // process. Same wire format either way — one stream-json user message.
+    const prompt = sdkMock.calls[0].prompt as AsyncGenerator<Record<string, unknown>>;
+    expect(typeof prompt[Symbol.asyncIterator]).toBe("function");
+    const first = await prompt.next();
+    const content = (
+      first.value as { message: { content: Array<{ type: string; text?: string }> } }
+    ).message.content;
+    expect(content.find((block) => block.type === "text")?.text).toContain("안녕하세요");
+    // …and the generator COMPLETES: the task-free result released the hold. An
+    // unreleased gate would park this `next()` forever (and, live, would hold
+    // the CLI's stdin open past the turn).
+    const second = await prompt.next();
+    expect(second.done).toBe(true);
+  });
+
+  it("holds the input open across a result with live background tasks, releasing on settle", async () => {
+    const { config, store, baseRequest } = setup();
+    const onTurnResult = vi.fn();
+    const events = makeEvents({ onTurnResult });
+    const bgChanged = (tasks: Array<{ task_id: string }>) => ({
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks,
+    });
+    // Consume the held-open prompt like the real SDK does, recording when it
+    // completes relative to the scripted stream.
+    let promptCompleted = false;
+    let completedBeforeWake: boolean | null = null;
+    sdkMock.impl = (args) => {
+      const prompt = args.prompt as AsyncGenerator<Record<string, unknown>>;
+      void (async () => {
+        await prompt.next(); // the user message
+        await prompt.next(); // parks on the gate
+        promptCompleted = true;
+      })();
+      async function* messages() {
+        yield initMsg();
+        yield bgChanged([{ task_id: "t1" }]);
+        yield assistantMsg([textBlock("접수")]);
+        yield successResult("접수");
+        // A result with a LIVE task must NOT release the gate — give a released
+        // gate's microtasks a beat to land before sampling, so a regression here
+        // cannot pass on scheduling luck.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        completedBeforeWake = promptCompleted;
+        yield bgChanged([]);
+        yield assistantMsg([textBlock("완료 보고")]);
+        yield successResult("완료 보고");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      return messages() as QueryHandle;
+    };
+
+    const response = await runAgentStream(baseRequest, [], config, store, events);
+
+    // No onTextFold sink in this test → legacy full join of both segments.
+    expect(response.text).toBe("접수\n\n완료 보고");
+    // Held through the background phase, released at the task-free boundary.
+    expect(completedBeforeWake).toBe(false);
+    expect(promptCompleted).toBe(true);
+    expect(onTurnResult).toHaveBeenCalledTimes(2);
+    expect(onTurnResult.mock.calls[0][0].backgroundTasks).toHaveLength(1);
+    expect(onTurnResult.mock.calls[1][0].backgroundTasks).toHaveLength(0);
+  });
+
+  it("keeps the plain string prompt on headless runs (single-turn teardown)", async () => {
+    const { config, store, baseRequest } = setup();
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    const response = await runClaudeAgent(baseRequest, [], config, store);
+
+    expect(response.text).toBe("ok");
+    expect(typeof sdkMock.calls[0].prompt).toBe("string");
   });
 
   it("injects the stored subscription OAuth token, applies autoCompactWindow, and skips non-record messages", async () => {
