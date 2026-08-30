@@ -121,6 +121,35 @@ are NOT top-level options: they ride `options.settings` (the CLI `--settings` JS
   which Noah never loads (`settingSources: []`) — runs rely on 'auto' resolving to in-process in a
   TTY-less server. Verified only at the unit level; watch the first live runs on the deploy server.
 
+## Workflow / ultracode (dynamic multi-agent orchestration, enabled 2026-08-30)
+- **Enablement mirrors agent teams' pattern, minus the env-var leg:** `Workflow` is exposed via
+  `SDK_WORKFLOW_TOOLS` (removed from `UNUSED_SDK_BUILTIN_TOOLS`, which used to drop it purely to save the
+  ~4.7k-token tool description) and folded into the hook's `TASK_ORCHESTRATION_TOOLS` auto-allow +
+  `allowedTools`, same as `SDK_TEAM_TOOLS`. One admin toggle (`workflow` in the togglable-tool catalog,
+  `toolSkillPolicy.ts`) can still disable it — the policy's disabledTools check runs BEFORE the
+  auto-allow, so the kill-switch wins regardless. The SDK's own "ultracode" keyword trigger
+  (`workflowKeywordTriggerEnabled`, default true) needed no code change — it was always on; only the
+  advertised `Workflow` tool was missing for it to switch the turn into.
+- **KNOWN LIMITATION — background subagents bypass the permission hook.** A `Workflow` invocation always
+  returns `status: "async_launched"` (per `WorkflowOutput` in `sdk-tools.d.ts`) and its `agent()` calls run
+  as background tasks — there is no foreground/synchronous mode to fall back on, unlike `Task`/`Agent`
+  (which `SUBAGENT_SPAWN_TOOLS` forces foreground specifically to dodge this same gap). The bundled CLI
+  consults neither hooks nor `canUseTool` nor `allowedTools` for a background subagent's own tool calls,
+  and auto-denies every permission-needing one (upstream-acknowledged, claude-code #34692/#27661). In
+  practice: a workflow-spawned agent's read-only work (Read/Grep/WebFetch/…) succeeds and shows normally;
+  any Bash/Write/Edit/etc. it attempts silently fails as if the user refused. Owner-accepted tradeoff
+  (2026-08-30) — re-verify on SDK bumps and drop this caveat once background subagents inherit the
+  parent's permission wiring (same note as `SUBAGENT_SPAWN_TOOLS`).
+- **Activity-tree nesting:** a workflow's own container `task_started` (system event, `workflow_name` set —
+  a more robust signal than its exact `task_type` literal, which is `local_workflow` today) renders as an
+  AGENT node, not a task row — only an agent can be a `parentId` target in the client's `liveAgents` tree,
+  and a task row can only attach flatly to an `agentId`. `LoopState.activeWorkflowAgentId` tracks the most
+  recently started, still-running workflow's node id; a subsequently spawned agent whose `task_started`
+  matches `AGENT_TASK_TYPES` (`subagent`/`local_agent`/`remote_agent`, or any `subagent_type` present) nests
+  under it instead of flattening to `main`, and the pointer clears when that workflow's own task ends. Last
+  workflow wins on concurrent workflows (rare) — a visual grouping aid, not a correctness guarantee. See
+  `sdkMessageHandlers.ts`'s `handleTaskSystemEvent`.
+
 ## Adding / changing an MCP tool server
 - **One template per `*Tools.ts`:** `buildXTools` (handler-level owner/elevated guards) + `buildXServer`
   + a `SERVER_NAME`/`TOOL_NAMES` const pair.

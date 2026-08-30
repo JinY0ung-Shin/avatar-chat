@@ -26,6 +26,15 @@ export const SDK_PLAN_TOOLS = ["EnterPlanMode", "ExitPlanMode"] as const;
  */
 export const SDK_TEAM_TOOLS = ["SendMessage"] as const;
 
+/**
+ * The "ultracode" dynamic multi-agent orchestration tool. Auto-allowed like
+ * SDK_TEAM_TOOLS (its own spawn is meta-work; the agents it spawns still hit
+ * the PreToolUse hook individually, modulo the background-subagent hook-bypass
+ * caveat — see SUBAGENT_SPAWN_TOOLS in preToolUseHook.ts) and deliberately NOT
+ * in SDK_HIDDEN_ACTIVITY_TOOLS so a workflow launch shows as an activity row.
+ */
+export const SDK_WORKFLOW_TOOLS = ["Workflow"] as const;
+
 export const SDK_INTERNAL_HIDDEN_TOOLS = [
   "ToolSearch",
   "TodoWrite",
@@ -82,18 +91,19 @@ export const SDK_ELEVATED_BUILTIN_TOOLS = [
  * does NOT use: they're absent from `allowedTools`, duplicate an app feature
  * (Cron* vs. `mcp__system__*_routine`, PushNotification/ReadNotifications vs.
  * `mcp__system__notify_user`, Enter/ExitWorktree vs. `mcp__git_repo__open_repo`),
- * or are interactive-CLI-only (Workflow / Monitor / DesignSync / ClaudeDesign /
+ * or are interactive-CLI-only (Monitor / DesignSync / ClaudeDesign /
  * ScheduleWakeup / RemoteTrigger / ReportFindings / SendFeedback / ProposeSkills /
  * ProposeGoal).
- * `SendMessage` is NOT here: it powers agent teams (SDK_TEAM_TOOLS) and an admin
- * can turn it off via the togglable-tool policy instead.
+ * `SendMessage` and `Workflow` are NOT here: they power agent teams
+ * (SDK_TEAM_TOOLS) and ultracode/dynamic-workflow orchestration
+ * (SDK_WORKFLOW_TOOLS) respectively, and an admin can turn either off via the
+ * togglable-tool policy instead.
  * Fed to the SDK `disallowedTools` option so they're dropped from the advertised
- * `tools` array on every request — ~10k tokens of tool descriptions (Workflow's
- * description alone is ~4.7k tokens). Unknown names are harmless no-ops, so the
- * list can name tools a given CLI version may not ship.
+ * `tools` array on every request — several kB of tool descriptions. Unknown
+ * names are harmless no-ops, so the list can name tools a given CLI version may
+ * not ship.
  */
 export const UNUSED_SDK_BUILTIN_TOOLS = [
-  "Workflow",
   "Monitor",
   "DesignSync",
   "CronCreate",

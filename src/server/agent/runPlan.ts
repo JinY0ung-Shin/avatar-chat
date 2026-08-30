@@ -1324,8 +1324,9 @@ export async function buildAgentRunPlan(
     ],
     // Drop full-CLI harness tools we never use from the advertised tool list.
     // `allowedTools` only auto-approves; it does NOT restrict what the CLI offers,
-    // so these (Workflow/Monitor/Cron*/Worktree/…) would otherwise ride along on
-    // every request as ~10k tokens of unused tool descriptions. See the constant.
+    // so these (Monitor/Cron*/Worktree/…) would otherwise ride along on every
+    // request as unused tool descriptions. Workflow is deliberately NOT dropped
+    // here — see UNUSED_SDK_BUILTIN_TOOLS. See the constant.
     disallowedTools: Array.from(
       new Set([
         ...UNUSED_SDK_BUILTIN_TOOLS,

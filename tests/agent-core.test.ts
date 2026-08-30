@@ -2452,6 +2452,83 @@ describe("sdk message handlers", () => {
     });
   });
 
+  it("nests Workflow (ultracode)-spawned agents under the workflow's own agent node", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    // The workflow's own container task: workflow_name present is the signal
+    // (task_type may or may not literally be "local_workflow"), so it renders
+    // as an agent node too — a plain task row can't be a parentId target.
+    handleSystemEvent(
+      {
+        subtype: "task_started",
+        task_id: "wf-task",
+        tool_use_id: "wf-tool",
+        task_type: "local_workflow",
+        workflow_name: "spec",
+      },
+      sink,
+      state,
+    );
+    expect(sink.onAgentStart).toHaveBeenCalledWith({
+      agentId: "wf-tool",
+      parentId: "main",
+      name: undefined,
+      subagentType: undefined,
+      description: "워크플로 실행: spec",
+    });
+
+    // A spawned agent from inside that workflow (no workflow_name of its own)
+    // nests under the workflow's agent node instead of flattening to main.
+    handleSystemEvent(
+      {
+        subtype: "task_started",
+        task_id: "wf-agent-1",
+        tool_use_id: "wf-agent-tool-1",
+        task_type: "local_agent",
+        subagent_type: "researcher",
+        prompt: "Gather sources",
+      },
+      sink,
+      state,
+    );
+    expect(sink.onAgentStart).toHaveBeenCalledWith({
+      agentId: "wf-agent-tool-1",
+      parentId: "wf-tool",
+      name: undefined,
+      subagentType: "researcher",
+      description: "Gather sources",
+    });
+
+    // Once the workflow itself ends, a later spawn (e.g. a plain Task/Agent
+    // tool background echo, unrelated to any workflow) falls back to main
+    // again rather than nesting under the now-finished workflow.
+    handleSystemEvent(
+      { subtype: "task_updated", task_id: "wf-task", patch: { status: "completed" } },
+      sink,
+      state,
+    );
+    expect(sink.onAgentEnd).toHaveBeenCalledWith({ agentId: "wf-tool", ok: true });
+    handleSystemEvent(
+      {
+        subtype: "task_started",
+        task_id: "later-agent",
+        tool_use_id: "later-agent-tool",
+        task_type: "subagent",
+        subagent_type: "writer",
+      },
+      sink,
+      state,
+    );
+    expect(sink.onAgentStart).toHaveBeenCalledWith({
+      agentId: "later-agent-tool",
+      parentId: "main",
+      name: undefined,
+      subagentType: "writer",
+      description: undefined,
+    });
+  });
+
   it("streams only main-agent deltas and extracts main assistant text", () => {
     const sink = events();
 

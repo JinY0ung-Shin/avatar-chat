@@ -15,6 +15,7 @@ import {
   SDK_ORCHESTRATION_TOOLS,
   SDK_SUBAGENT_TOOLS,
   SDK_TEAM_TOOLS,
+  SDK_WORKFLOW_TOOLS,
 } from "../../shared/sdkToolPresentation.js";
 import {
   DEFAULT_TOOL_SKILL_POLICY,
@@ -34,13 +35,19 @@ const NO_VISION_READ_BLOCKED = /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|heic|heif|av
  * SDK orchestration tools that should never trigger the user permission modal.
  * Includes the agent-teams coordination tools (SendMessage): messaging a
  * teammate is meta-work like spawning one (Agent is already here) — the
- * teammate's OWN tool calls still hit this hook individually. The admin
+ * teammate's OWN tool calls still hit this hook individually. Also includes
+ * `Workflow` (ultracode): launching a workflow is meta-work too — it always
+ * returns `status: "async_launched"` and never blocks on the spawned agents,
+ * so there is nothing here to gate. Those agents' OWN tool calls still hit
+ * this hook (or, per SUBAGENT_SPAWN_TOOLS below, don't — Workflow has no
+ * foreground lever to dodge that gap the way Task/Agent do). The admin
  * disabledTools policy check runs BEFORE the auto-allow, so an admin can still
- * turn team messaging off.
+ * turn team messaging or workflows off.
  */
 export const TASK_ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set([
   ...SDK_ORCHESTRATION_TOOLS,
   ...SDK_TEAM_TOOLS,
+  ...SDK_WORKFLOW_TOOLS,
 ]);
 const AUTO_ALLOWED_META_TOOLS: ReadonlySet<string> = new Set(["Skill", ...SDK_INTERNAL_HIDDEN_TOOLS]);
 

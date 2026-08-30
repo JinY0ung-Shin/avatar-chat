@@ -323,11 +323,15 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     expect(options.maxTurns).toBe(config.maxTurns);
     expect(options.cwd).toBe(baseRequest.cwd);
     expect(options.model).toBe(DEFAULT_MODEL_TIER);
-    expect(options.disallowedTools).toContain("Workflow");
+    expect(options.disallowedTools).toContain("Monitor");
     // Agent teams: SendMessage stays advertised (auto-allowed) and the CLI
     // feature flag rides in the subprocess env.
     expect(options.disallowedTools).not.toContain("SendMessage");
     expect(options.allowedTools).toContain("SendMessage");
+    // ultracode: Workflow stays advertised (auto-allowed) too, so the keyword
+    // trigger has a live tool to switch the turn into.
+    expect(options.disallowedTools).not.toContain("Workflow");
+    expect(options.allowedTools).toContain("Workflow");
     expect(
       (options.env as Record<string, string | undefined>)
         .CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS,

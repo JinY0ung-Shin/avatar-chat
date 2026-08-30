@@ -623,6 +623,18 @@ describe("PreToolUse hook admin tool/skill policy", () => {
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
     expect(out.hookSpecificOutput.permissionDecisionReason).toContain("disabled by the system administrator");
   });
+
+  it("denies admin-disabled workflows (ultracode) despite its auto-allow", async () => {
+    // Workflow is in the orchestration auto-allow set too (TASK_ORCHESTRATION_TOOLS);
+    // the admin policy check runs BEFORE the auto-allow, so the kill-switch still wins.
+    const hook = policyHook({ disabledTools: ["Workflow"], disabledSkills: [] });
+    const out = await hook(
+      { tool_name: "Workflow", tool_input: { name: "spec" }, tool_use_id: "t7" },
+      "t7",
+    );
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain("disabled by the system administrator");
+  });
 });
 
 describe("prompt admin-disabled note", () => {

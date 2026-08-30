@@ -143,6 +143,18 @@ interface TaskRecord {
   kind: TaskKind;
 }
 
+/**
+ * `task_started.task_type` values (background-task path, distinct from the
+ * inline TaskCreate/TaskUpdate tool family) that mean "this is a spawned
+ * agent, not a plain background task": the plain `subagent` label used by
+ * agent-teams background teammate spawns, plus the SDK's newer `local_agent`/
+ * `remote_agent` local-workflow-script agent-spawn literals (per
+ * sdk-tools.d.ts: is_backgrounded is "Set for local_agent and local_bash
+ * tasks"). Kept permissive — an unmatched value simply falls back to a
+ * generic task row, never breaks anything.
+ */
+const AGENT_TASK_TYPES: ReadonlySet<string> = new Set(["subagent", "local_agent", "remote_agent"]);
+
 export interface LoopState {
   /** tool_use ids that spawned a subagent → distinguishes onAgentEnd from onToolEnd. */
   spawnedAgentIds: Set<string>;
@@ -156,6 +168,14 @@ export interface LoopState {
    * tell "turn over" from "turn over BUT background work still running".
    */
   backgroundTasks: Map<string, BackgroundTaskSummary>;
+  /**
+   * uiId of the most recently started, still-running Workflow (ultracode)
+   * container task, if any — so a subagent the workflow spawns nests under it
+   * in the activity tree (agentId chain) instead of flattening to main. Last
+   * workflow wins on concurrent workflows (rare); good enough for a visual
+   * grouping aid, not a correctness guarantee.
+   */
+  activeWorkflowAgentId?: string;
 }
 
 export function createLoopState(): LoopState {
@@ -164,6 +184,7 @@ export function createLoopState(): LoopState {
     tasks: new Map(),
     hiddenTasks: new Set(),
     backgroundTasks: new Map(),
+    activeWorkflowAgentId: undefined,
   };
 }
 
@@ -285,6 +306,9 @@ function emitTaskUpdate(
   const record = taskRecord(state, taskId);
   if (record.kind === "agent") {
     if (statusIsTerminal(update.status || "")) {
+      if (state.activeWorkflowAgentId === record.uiId) {
+        state.activeWorkflowAgentId = undefined;
+      }
       events.onAgentEnd?.({ agentId: record.uiId, ok: taskOk(update.status || "") });
     } else {
       // A mapped Korean tool label outranks the SDK's summary/description, which
@@ -743,8 +767,18 @@ function handleTaskSystemEvent(message: Record<string, unknown>, events: AgentEv
     const toolUseId = asString(message.tool_use_id);
     const existing = state.tasks.get(taskId) || (toolUseId ? state.tasks.get(toolUseId) : undefined);
     const uiId = existing?.uiId || toolUseId || taskId;
+    // A Workflow (ultracode) container task carries workflow_name regardless of
+    // its exact task_type literal ("local_workflow" today) — a more robust
+    // signal than matching the type string. It renders as an agent node too
+    // (not a plain task row) purely so its spawned agents have somewhere in
+    // the liveAgents parentId chain to nest under; TASK rows only ever attach
+    // to an agentId, they can't themselves be a parent.
+    const workflowName = asString(message.workflow_name) || undefined;
+    const isWorkflowContainer = Boolean(workflowName);
     const taskKind: TaskKind =
-      asString(message.task_type) === "subagent" || Boolean(asString(message.subagent_type))
+      isWorkflowContainer ||
+      AGENT_TASK_TYPES.has(asString(message.task_type)) ||
+      Boolean(asString(message.subagent_type))
         ? "agent"
         : existing?.kind || "task";
     const record = { uiId, kind: taskKind };
@@ -754,15 +788,28 @@ function handleTaskSystemEvent(message: Record<string, unknown>, events: AgentEv
     }
     if (taskKind === "agent") {
       state.spawnedAgentIds.add(uiId);
+      // A workflow's own container spawn is top-level; everything else nests
+      // under whichever workflow is currently active, if any (agent-teams
+      // background teammate spawns and Task/Agent's own background_tasks_changed
+      // echoes have no workflow in flight, so they fall back to MAIN_AGENT_ID
+      // exactly as before).
+      const parentId = isWorkflowContainer ? MAIN_AGENT_ID : state.activeWorkflowAgentId || MAIN_AGENT_ID;
       events.onAgentStart?.({
         agentId: uiId,
-        parentId: MAIN_AGENT_ID,
+        parentId,
         // Background teammate spawns announce via task_started; carry the
         // teammate name when the event provides it.
         name: asString(message.teammate_name) || undefined,
         subagentType: asString(message.subagent_type) || undefined,
-        description: asString(message.description) || asString(message.prompt) || undefined,
+        description:
+          (isWorkflowContainer ? `워크플로 실행: ${workflowName}` : undefined) ||
+          asString(message.description) ||
+          asString(message.prompt) ||
+          undefined,
       });
+      if (isWorkflowContainer) {
+        state.activeWorkflowAgentId = uiId;
+      }
     } else {
       events.onTaskStart?.({
         taskId: uiId,

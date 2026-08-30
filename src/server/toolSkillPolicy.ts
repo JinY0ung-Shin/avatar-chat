@@ -64,6 +64,13 @@ export const TOGGLABLE_BUILTIN_TOOLS: TogglableBuiltinTool[] = [
     descriptionKo:
       "아바타가 이름 붙인 하위 에이전트(팀원)를 띄워 협업시키는 실험 기능. 끄면 SendMessage 도구와 CLI 팀 런타임도 함께 비활성화.",
   },
+  {
+    id: "workflow",
+    names: ["Workflow"],
+    labelKo: "워크플로 (Workflow / ultracode)",
+    descriptionKo:
+      "아바타가 동적 다중 에이전트 워크플로를 실행하는 실험 기능(프롬프트의 'ultracode' 키워드가 트리거). 워크플로가 백그라운드로 스폰하는 에이전트는 SDK 제약으로 실행/쓰기류 도구 권한 확인을 건너뛰고 매번 조용히 거부됨 — 읽기 전용 조사 용도로만 쓰거나, 문제가 되면 끄기.",
+  },
 ];
 
 /**
