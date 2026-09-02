@@ -347,7 +347,7 @@ describe("copy_image tool handler", () => {
     expect(noOrigin.content[0].text).toContain("mcp__file_output__show_file");
   });
 
-  it("returns the absolute staging URL and mandates the list_tabs check before pasting", async () => {
+  it("returns the absolute staging URL and drives the paste off the COPIED click result", async () => {
     const stageClipboardImage = stage();
     const tools = buildBrowserTools({
       execute: execute(),
@@ -363,10 +363,21 @@ describe("copy_image tool handler", () => {
     const body = res.content[0].text;
     expect(body).toContain("https://noah.example/browser-clip/abc123");
     // The copy can silently fail, so success text and description both route the
-    // agent through the title check instead of assuming the clipboard is set.
-    expect(body).toContain("list_tabs");
+    // agent through the title the CLICK reports instead of assuming the
+    // clipboard is set — no list_tabs round trip, since the click result
+    // already carries that title.
     expect(body).toContain("COPIED");
+    expect(body).toContain("COPY_FAILED");
+    expect(body).not.toContain("VERIFY with mcp__browser__list_tabs");
+    // Both extension generations ride this one text: 0.27.0+ closes the COPIED
+    // staging tab and re-points the working tab, an older install does not, and
+    // the tool cannot tell which one the viewer has installed.
+    expect(body).toContain("CLOSES the staging tab itself");
+    expect(body).toContain("mcp__browser__close_tab the staging tab");
     expect(description(tools)).toContain("COPY_FAILED");
+    expect(description(tools)).toContain("CLOSES the staging tab itself");
+    expect(description(tools)).toContain("`close_tab` the staging tab");
+    expect(description(tools)).not.toContain("VERIFY the copy with `list_tabs`");
     // Ctrl+V is not paste on macOS; a hardcoded ["Control"] would paste nothing.
     expect(body).toContain('["Meta"]');
     expect(body).not.toContain('["Control"]');

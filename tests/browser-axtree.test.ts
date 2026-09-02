@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // Kept on ONE line: @ts-expect-error only covers the line after it, and the
 // error is raised on the module specifier — the LAST line of a wrapped import.
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, groupClickableItems, ariaSortByBackendId, axValueAnswer, clearFailed, sliderPlan, ariaExpandedOf, isDisclosureTrigger, disclosureClickOutcome, pastedTextVanished, visionTokens, visionFits, visionFitSize, viewportShotScale, jpegDimensions, base64ToBytes, screenshotImageNote, pixelPointNote, pixelDragNote, VISION_STANDARD_MAX_EDGE, VISION_STANDARD_MAX_TOKENS } from "../extension/axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, groupClickableItems, ariaSortByBackendId, axValueAnswer, clearFailed, sliderPlan, ariaExpandedOf, isDisclosureTrigger, disclosureClickOutcome, pastedTextVanished, visionTokens, visionFits, visionFitSize, viewportShotScale, jpegDimensions, base64ToBytes, screenshotImageNote, pixelPointNote, pixelDragNote, isClipboardStagingUrl, clipboardCopiedNote, CLIPBOARD_STAGING_PATH_RE, CLIPBOARD_COPIED_TITLE, CLIPBOARD_COPY_FAILED_TITLE, CLIPBOARD_NOTE_TITLE_MAX, VISION_STANDARD_MAX_EDGE, VISION_STANDARD_MAX_TOKENS } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -3759,6 +3759,139 @@ describe("screenshot / pixel-mode bridge notes (issue #66)", () => {
       ).toBe(
         "Pixels (10, 20)→(300, 400) on the 874×1372 px screenshot → viewport (13, 26)→(396, 527) CSS px.",
       );
+    });
+  });
+});
+
+describe("clipboard staging auto-close", () => {
+  const NOAH = "https://noah.corp.local";
+  const TOKEN = "0123456789abcdef0123456789abcdef";
+  const staging = `${NOAH}/browser-clip/${TOKEN}`;
+
+  describe("isClipboardStagingUrl — the allowlist exemption AND the close trigger", () => {
+    it("accepts the exact token page on the origin that relayed the op", () => {
+      expect(isClipboardStagingUrl(staging, NOAH)).toBe(true);
+      expect(isClipboardStagingUrl(`http://localhost:48787/browser-clip/${TOKEN}`, "http://localhost:48787")).toBe(
+        true,
+      );
+    });
+
+    it("exempts nothing when no staging origin was supplied", () => {
+      // A headless/relayless op carries no sender.origin, and an unset origin
+      // must never turn into "matches everything".
+      expect(isClipboardStagingUrl(staging, "")).toBe(false);
+      expect(isClipboardStagingUrl(staging, null)).toBe(false);
+      expect(isClipboardStagingUrl(staging, undefined)).toBe(false);
+    });
+
+    it("refuses a DIFFERENT origin carrying the same path", () => {
+      expect(isClipboardStagingUrl(`https://evil.example/browser-clip/${TOKEN}`, NOAH)).toBe(false);
+      // Same host, different scheme and different port are different origins.
+      expect(isClipboardStagingUrl(`http://noah.corp.local/browser-clip/${TOKEN}`, NOAH)).toBe(false);
+      expect(isClipboardStagingUrl(`https://noah.corp.local:8443/browser-clip/${TOKEN}`, NOAH)).toBe(false);
+      // A hostname that merely ENDS with the allowed one is not the origin.
+      expect(isClipboardStagingUrl(`https://evilnoah.corp.local/browser-clip/${TOKEN}`, NOAH)).toBe(false);
+    });
+
+    it("matches the path EXACTLY — never a prefix, never a longer path", () => {
+      // The whole point of the exact match: a prefix would trust the server's
+      // routing to keep the logged-in SPA out of an exempted path.
+      expect(isClipboardStagingUrl(`${NOAH}/browser-clip/`, NOAH)).toBe(false);
+      expect(isClipboardStagingUrl(`${NOAH}/browser-clip`, NOAH)).toBe(false);
+      // /browser-clip/<token>/img is a REAL route (the page fetches its own
+      // bytes from it) and is still not a drivable page.
+      expect(isClipboardStagingUrl(`${staging}/img`, NOAH)).toBe(false);
+      expect(isClipboardStagingUrl(`${NOAH}/browser-clip.js`, NOAH)).toBe(false);
+      expect(isClipboardStagingUrl(`${NOAH}/x/browser-clip/${TOKEN}`, NOAH)).toBe(false);
+      expect(isClipboardStagingUrl(`${NOAH}/browser-clip/${TOKEN}?x=1`, NOAH)).toBe(true);
+      expect(isClipboardStagingUrl(`${NOAH}/browser-clip/${TOKEN}#f`, NOAH)).toBe(true);
+    });
+
+    it("requires 32 LOWERCASE hex characters", () => {
+      expect(isClipboardStagingUrl(`${NOAH}/browser-clip/${TOKEN.toUpperCase()}`, NOAH)).toBe(false);
+      expect(isClipboardStagingUrl(`${NOAH}/browser-clip/${TOKEN.slice(0, 31)}`, NOAH)).toBe(false);
+      expect(isClipboardStagingUrl(`${NOAH}/browser-clip/${TOKEN}a`, NOAH)).toBe(false);
+      expect(isClipboardStagingUrl(`${NOAH}/browser-clip/${"g".repeat(32)}`, NOAH)).toBe(false);
+    });
+
+    it("refuses anything that is not an http(s) URL, unparseable included", () => {
+      expect(isClipboardStagingUrl(`file:///browser-clip/${TOKEN}`, "file://")).toBe(false);
+      expect(isClipboardStagingUrl(`chrome-extension://abc/browser-clip/${TOKEN}`, "chrome-extension://abc")).toBe(
+        false,
+      );
+      expect(isClipboardStagingUrl("about:blank", NOAH)).toBe(false);
+      expect(isClipboardStagingUrl(`/browser-clip/${TOKEN}`, NOAH)).toBe(false);
+      expect(isClipboardStagingUrl("", NOAH)).toBe(false);
+      expect(isClipboardStagingUrl(undefined, NOAH)).toBe(false);
+    });
+
+    it("keeps the path shape exported so the server's token contract has one pin", () => {
+      expect(CLIPBOARD_STAGING_PATH_RE.test(`/browser-clip/${TOKEN}`)).toBe(true);
+      expect(CLIPBOARD_COPIED_TITLE).toBe("COPIED");
+      expect(CLIPBOARD_COPY_FAILED_TITLE).toBe("COPY_FAILED");
+    });
+  });
+
+  describe("clipboardCopiedNote — what replaces the snapshot of a closed tab", () => {
+    it("names the outcome, the close, and where the pointer went", () => {
+      expect(clipboardCopiedNote({ title: "Edit page - Confluence", tabId: 7 })).toBe(
+        'Copied to the clipboard: the staging tab reported COPIED, so it was closed and the working tab is ' +
+          'back on "Edit page - Confluence" (tabId 7). Focus the editor there and paste with press_key exactly ' +
+          "as the copy tool's result said, then re-read the page to confirm the paste landed.",
+      );
+    });
+
+    it("tells the agent to pick a tab itself when no pre-staging tab was remembered", () => {
+      expect(clipboardCopiedNote({})).toBe(
+        "Copied to the clipboard: the staging tab reported COPIED, so it was closed. No previous working " +
+          "tab was remembered — call list_tabs and select_tab your target page, then focus the editor and " +
+          "paste with press_key as the copy tool's result said, and re-read the page to confirm the paste landed.",
+      );
+    });
+
+    it("treats a null/absent/negative tab id as UNKNOWN, never as tabId 0", () => {
+      // Number(null) is 0 and Number.isInteger(0) is true: coercing here would
+      // have printed a tab id that does not exist for the one case the second
+      // shape exists to describe. -1 is chrome.tabs.TAB_ID_NONE.
+      const unknown = clipboardCopiedNote({});
+      expect(clipboardCopiedNote({ tabId: null })).toBe(unknown);
+      expect(clipboardCopiedNote({ tabId: undefined, title: "x" })).toBe(unknown);
+      expect(clipboardCopiedNote({ tabId: -1, title: "x" })).toBe(unknown);
+      expect(clipboardCopiedNote({ tabId: "7", title: "x" })).toBe(unknown);
+      expect(clipboardCopiedNote({ tabId: 1.5, title: "x" })).toBe(unknown);
+      expect(clipboardCopiedNote(undefined)).toBe(unknown);
+      expect(unknown).not.toContain("tabId");
+    });
+
+    it("says (untitled) rather than an empty pair of quotes", () => {
+      expect(clipboardCopiedNote({ title: "   ", tabId: 4 })).toContain('back on "(untitled)" (tabId 4)');
+      expect(clipboardCopiedNote({ tabId: 0 })).toContain('back on "(untitled)" (tabId 0)');
+    });
+
+    it("trims and caps the page-derived title at the note's value budget", () => {
+      const note = clipboardCopiedNote({ title: `  ${"x".repeat(200)}  `, tabId: 9 });
+      expect(note).toContain(`back on "${"x".repeat(CLIPBOARD_NOTE_TITLE_MAX)}" (tabId 9)`);
+      expect(note).not.toContain("x".repeat(CLIPBOARD_NOTE_TITLE_MAX + 1));
+    });
+
+    it("keeps the quoted title inside the budget by CODE UNITS, on code-point boundaries", () => {
+      // 80 astral code points are 160 code units — capping by code points alone
+      // blew the ceiling, and capping by code units alone would leave half a
+      // surrogate pair in a note rendered OUTSIDE the untrusted wrapper.
+      const note = clipboardCopiedNote({ title: "\u{1F600}".repeat(120), tabId: 3 });
+      const quoted = note.slice(note.indexOf('back on "') + 9, note.indexOf('" (tabId'));
+      expect(quoted.length).toBeLessThanOrEqual(CLIPBOARD_NOTE_TITLE_MAX);
+      expect([...quoted]).toHaveLength(CLIPBOARD_NOTE_TITLE_MAX / 2);
+      expect(quoted).toBe("\u{1F600}".repeat(CLIPBOARD_NOTE_TITLE_MAX / 2));
+    });
+
+    it("stays under 400 chars so a prepended working-tab notice still fits the 480 budget", () => {
+      for (const title of ["x".repeat(200), "\u{1F600}".repeat(200), "헌".repeat(200), ""]) {
+        for (const tabId of [0, 7, 2147483647]) {
+          expect(clipboardCopiedNote({ title, tabId }).length).toBeLessThanOrEqual(400);
+        }
+      }
+      expect(clipboardCopiedNote({}).length).toBeLessThanOrEqual(400);
     });
   });
 });

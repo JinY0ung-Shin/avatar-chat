@@ -4981,7 +4981,7 @@ describe("browser copy_text tool", () => {
   const execute = () =>
     vi.fn(async () => ({ behavior: "ok" as const, url: "https://intra.example/x", title: "T" }));
 
-  it("stages the text and mandates the COPIED check before pasting", async () => {
+  it("stages the text and drives the paste off the COPIED click result, not a list_tabs verify", async () => {
     const stageClipboardText = vi.fn(async () => ({ path: "/browser-clip/abc123" }));
     const tools = buildBrowserTools({
       execute: execute(),
@@ -4997,10 +4997,19 @@ describe("browser copy_text tool", () => {
     const body = res.content[0].text ?? "";
     expect(body).toContain("https://noah.example/browser-clip/abc123");
     // The copy can silently fail, so the result routes the agent through the
-    // title check rather than letting it assume the clipboard is set — and a
-    // REPLACE needs the select-all before the paste, or the paste appends.
-    expect(body).toContain("list_tabs");
+    // title the CLICK itself reports rather than letting it assume the
+    // clipboard is set — and a REPLACE needs the select-all before the paste,
+    // or the paste appends. The check no longer costs a list_tabs round trip:
+    // the click result already carries the staging page's title.
     expect(body).toContain("COPIED");
+    expect(body).toContain("COPY_FAILED");
+    expect(body).not.toContain("VERIFY with mcp__browser__list_tabs");
+    // One text has to drive BOTH extension generations: a current bridge closes
+    // the staging tab itself and re-points the working tab, an older one leaves
+    // the agent to select back and close it. Getting either half wrong strands
+    // a staging tab open forever or sends the agent to a tab that is gone.
+    expect(body).toContain("CLOSES the staging tab itself");
+    expect(body).toContain("mcp__browser__close_tab the staging tab");
     expect(body).toContain('key "a"');
     expect(body).toContain('key "v"');
     expect(body).toContain('["Control"]');

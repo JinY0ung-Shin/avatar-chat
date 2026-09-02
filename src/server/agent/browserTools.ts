@@ -1546,10 +1546,12 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
       "Copy a local image file onto the user's clipboard so you can paste it into a page that has no upload " +
         "route you can use (e.g. a Confluence page body). Give `path`, the image file to copy (the same kind " +
         "of path you would hand to mcp__file_output). This returns a staging URL to drive: `new_tab` it, " +
-        "`click` its '클립보드로 복사' button, then VERIFY the copy with `list_tabs` before pasting — that " +
-        'tab\'s title becomes "COPIED" on success and "COPY_FAILED" when the browser refused (the copy needs ' +
-        "the window's activation, so it can fail). Only on COPIED: `select_tab` back to your target page, " +
-        "focus the editor, " +
+        "`click` its '클립보드로 복사' button, then read the outcome from THAT click's own result — the " +
+        'staging page\'s title becomes "COPIED" on success and "COPY_FAILED" when the browser refused (the ' +
+        "copy needs the window's activation, so it can fail). On COPIED a current Noah extension CLOSES the " +
+        "staging tab itself and puts the working tab back on your target page (its bridge note says so); an " +
+        "older extension leaves the tab open, so `select_tab` back to your target page and `close_tab` the " +
+        "staging tab. Never paste on anything but COPIED. Then focus the editor, " +
         pasteInstruction(ctx.viewerPlatform) +
         ", then RE-READ the page (`snapshot` or `read_text`) to confirm the image actually landed. The image " +
         "is normalized to PNG. The staging page is allowed automatically by the Noah extension (the exemption " +
@@ -1583,14 +1585,17 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           return text(
             "Image staged for the clipboard. Now: 1) open this URL with mcp__browser__new_tab: " +
               url +
-              "  2) mcp__browser__click the button named '클립보드로 복사'  3) VERIFY with " +
-              'mcp__browser__list_tabs that THIS staging tab\'s title is now "COPIED". "COPY_FAILED" or an ' +
-              "unchanged title means the copy did NOT happen — do not paste; tell the user to bring the " +
-              "browser window to the foreground (or click the button themselves) and retry.  4) Only after " +
-              "COPIED: mcp__browser__select_tab back to your target page, focus the editor, and paste — " +
-              "mcp__browser__" +
+              "  2) mcp__browser__click the button named '클립보드로 복사'. The CLICK result tells you the " +
+              'outcome: on success the staging page\'s title becomes "COPIED" — with a current Noah extension ' +
+              "the bridge then CLOSES the staging tab itself and its note says the working tab is back on " +
+              "your target page; with an older extension the staging tab stays open (the result's " +
+              '"Current page" line still reads COPIED), so mcp__browser__select_tab back to your target page ' +
+              'and mcp__browser__close_tab the staging tab.  "COPY_FAILED" or an unchanged title means the ' +
+              "copy did NOT happen — that tab stays open; do not paste; tell the user to bring the browser " +
+              "window to the foreground (or click the button themselves) and retry.  3) Only after COPIED: " +
+              "click the editor to focus it and paste — mcp__browser__" +
               pasteInstruction(ctx.viewerPlatform) +
-              ".  5) RE-READ the page (mcp__browser__snapshot or read_text) to confirm the image " +
+              ".  4) RE-READ the page (mcp__browser__snapshot or read_text) to confirm the image " +
               "actually landed before reporting success — never assume the paste worked.  The staging link " +
               "expires in ~2 minutes.",
           );
@@ -1610,10 +1615,13 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "while a long `type` can be silently truncated by the same editor. It OVERWRITES whatever the user " +
         "currently has on their clipboard, so use it for content the task actually needs pasted, not as a " +
         "scratch pad. Same staging flow as copy_image: this returns a staging URL to drive — `new_tab` it, " +
-        "`click` its '클립보드로 복사' button, then VERIFY the copy with `list_tabs` before pasting — that " +
-        'tab\'s title becomes "COPIED" on success and "COPY_FAILED" when the browser refused (the copy needs ' +
-        "the window's activation, so it can fail). Only on COPIED: `select_tab` back to your target page, " +
-        "click the editor to focus it, select everything first with " +
+        "`click` its '클립보드로 복사' button, then read the outcome from THAT click's own result — the " +
+        'staging page\'s title becomes "COPIED" on success and "COPY_FAILED" when the browser refused (the ' +
+        "copy needs the window's activation, so it can fail). On COPIED a current Noah extension CLOSES the " +
+        "staging tab itself and returns the working tab to your target page (its bridge note says so); an " +
+        "older extension leaves the tab open, so `select_tab` back to your target page and `close_tab` the " +
+        "staging tab. Never paste on anything but COPIED. Then click the editor to focus it, select " +
+        "everything first with " +
         selectAllInstruction(ctx.viewerPlatform) +
         " when you are REPLACING what it already holds, " +
         pasteInstruction(ctx.viewerPlatform) +
@@ -1656,16 +1664,20 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           return text(
             "Text staged for the clipboard. Now: 1) open this URL with mcp__browser__new_tab: " +
               url +
-              "  2) mcp__browser__click the button named '클립보드로 복사'  3) VERIFY with " +
-              'mcp__browser__list_tabs that THIS staging tab\'s title is now "COPIED". "COPY_FAILED" or an ' +
-              "unchanged title means the copy did NOT happen — do not paste; tell the user to bring the " +
-              "browser window to the foreground (or click the button themselves) and retry.  4) Only after " +
-              "COPIED: mcp__browser__select_tab back to your target page and click the editor to focus it. " +
-              "If you are REPLACING what it already holds, select everything first — mcp__browser__" +
+              "  2) mcp__browser__click the button named '클립보드로 복사'. The CLICK result tells you the " +
+              'outcome: on success the staging page\'s title becomes "COPIED" — with a current Noah extension ' +
+              "the bridge then CLOSES the staging tab itself and its note says the working tab is back on " +
+              "your target page; with an older extension the staging tab stays open (the result's " +
+              '"Current page" line still reads COPIED), so mcp__browser__select_tab back to your target page ' +
+              'and mcp__browser__close_tab the staging tab.  "COPY_FAILED" or an unchanged title means the ' +
+              "copy did NOT happen — that tab stays open; do not paste; tell the user to bring the browser " +
+              "window to the foreground (or click the button themselves) and retry.  3) Only after COPIED: " +
+              "click the editor to focus it. If you are REPLACING what it already holds, select everything " +
+              "first — mcp__browser__" +
               selectAllInstruction(ctx.viewerPlatform) +
-              ".  5) Paste — mcp__browser__" +
+              ".  4) Paste — mcp__browser__" +
               pasteInstruction(ctx.viewerPlatform) +
-              ".  6) RE-READ the page (mcp__browser__snapshot or read_text) to confirm the text actually " +
+              ".  5) RE-READ the page (mcp__browser__snapshot or read_text) to confirm the text actually " +
               "landed before reporting success — never assume the paste worked. Into a contentEditable or " +
               "iframe rich editor (TinyMCE and the like) the paste can SHOW in the immediate snapshot " +
               "without the editor committing it (issue #65): read again a moment later, verify via the " +

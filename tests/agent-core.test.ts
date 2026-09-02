@@ -4030,6 +4030,30 @@ describe("buildPrompt", () => {
     expect(noVision).toContain("`xFraction`/`yFraction`");
   });
 
+  it("teaches the clipboard staging tab's auto-close for BOTH extension generations", () => {
+    // A current extension (0.27.0+) closes a COPIED staging tab itself and puts
+    // the working tab back on the target page; an older install leaves the tab
+    // open. MIN_COMPATIBLE deliberately stayed put, so the prompt cannot know
+    // which generation this viewer runs and must carry both outcomes — plus the
+    // rule that holds either way: the CLICK result is the verdict, and COPIED is
+    // the only state a paste may follow.
+    const prompt = buildPrompt(req({ browserEnabled: true }), 0);
+    expect(prompt).toContain("read the outcome from THAT click's own result");
+    expect(prompt).toContain("CLOSES the staging tab for you");
+    expect(prompt).toContain("`close_tab` the staging tab yourself");
+    expect(prompt).toContain("Never paste on anything but COPIED");
+    // list_tabs is no longer the verification step: it cost a round trip for a
+    // title the click already returned, and after the auto-close there is no
+    // staging tab left for it to find.
+    expect(prompt).not.toContain("VERIFY the copy with `list_tabs`");
+
+    // No bridge this run: the whole browser paragraph stays out, so the model is
+    // never taught a staging flow it has no tools to drive.
+    const noBrowser = buildPrompt(req(), 0);
+    expect(noBrowser).not.toContain("CLOSES the staging tab for you");
+    expect(noBrowser).not.toContain("클립보드로 복사");
+  });
+
   it("injects deck (PPTX) guidance only when the toolchain and file output are both active", () => {
     // File output alone is not enough — the deployment must carry the toolchain.
     expect(buildPrompt(req({ viewerIsOwner: true, fileOutputEnabled: true }), 0)).not.toContain("PowerPoint decks");

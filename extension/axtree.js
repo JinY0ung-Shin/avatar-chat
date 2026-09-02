@@ -2787,3 +2787,95 @@ export function pixelDragNote(info) {
     `(${r(info?.toCssX)}, ${r(info?.toCssY)}) CSS px.`
   );
 }
+
+// -------------------------------------------------------- clipboard staging
+//
+// The clipboard STAGING page (`<noahOrigin>/browser-clip/<32 hex>`) is the one
+// page the allowlist exempts and the one page the bridge closes on its own, so
+// both halves of that decision — what counts as a staging page, and what its
+// title says about the copy — live here rather than inline in background.js.
+
+/**
+ * The EXACT staging-page path, never a prefix: the server hard-404s the rest of
+ * /browser-clip/, but matching a prefix would trust the server's routing to keep
+ * the logged-in Noah SPA out of an exempted path.
+ */
+export const CLIPBOARD_STAGING_PATH_RE = /^\/browser-clip\/[0-9a-f]{32}$/;
+
+/**
+ * The staging page's own title contract (`BROWSER_CLIP_SCRIPT`, server side):
+ * "COPIED" once clipboard.write* resolved, "COPY_FAILED" when the browser
+ * refused it. Anything else means the button has not been pressed yet.
+ */
+export const CLIPBOARD_COPIED_TITLE = "COPIED";
+export const CLIPBOARD_COPY_FAILED_TITLE = "COPY_FAILED";
+
+/**
+ * Is this URL a clipboard staging page for the Noah origin that sent the op?
+ *
+ * `stagingOrigin` is the browser-verified `sender.origin` of the relaying Noah
+ * page, so an unset origin exempts nothing. Same parse rules as the allowlist
+ * check that calls this (http(s) only, exact origin, exact path), because this
+ * IS that check's exemption clause: allowlisting the app origin itself would
+ * make the whole logged-in Noah UI drivable by an agent whose inputs include
+ * untrusted page text.
+ */
+export function isClipboardStagingUrl(rawUrl, stagingOrigin) {
+  if (!stagingOrigin) return false;
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  return url.origin === stagingOrigin && CLIPBOARD_STAGING_PATH_RE.test(url.pathname);
+}
+
+/** As much of a tab title as a bridge note may quote (background.js NOTE_VALUE_MAX). */
+export const CLIPBOARD_NOTE_TITLE_MAX = 80;
+
+/**
+ * The note the auto-close returns in place of the snapshot of a tab that no
+ * longer exists.
+ *
+ * It has to carry three things the agent cannot see any other way: that the copy
+ * SUCCEEDED (the title said so before the tab went), that the staging tab is
+ * gone so there is nothing left to select away from, and where the working
+ * pointer now is — because the paste has to happen on the target page and the
+ * bridge just moved the pointer without being asked. When no pre-staging tab was
+ * remembered the pointer is null, and saying "list_tabs then select_tab" is the
+ * honest instruction: guessing a tab is what targetTab's oldest-tab fallback
+ * already refuses to do silently.
+ *
+ * Kept under 400 chars: perform() may prepend a working-tab notice, and the two
+ * share background.js's 480-char note budget.
+ */
+export function clipboardCopiedNote(info) {
+  // A REAL chrome tab id or nothing: `Number(null)` is 0 and `Number.isInteger(0)`
+  // is true, so coercing here would have printed "tabId 0" for the case this
+  // formatter's whole second shape exists to describe.
+  const tabId = typeof info?.tabId === "number" ? info.tabId : Number.NaN;
+  if (!Number.isInteger(tabId) || tabId < 0) {
+    return (
+      "Copied to the clipboard: the staging tab reported COPIED, so it was closed. No previous working " +
+      "tab was remembered — call list_tabs and select_tab your target page, then focus the editor and " +
+      "paste with press_key as the copy tool's result said, and re-read the page to confirm the paste landed."
+    );
+  }
+  // Bounded by CODE UNITS, because that is what the note budget counts (a title
+  // of 80 astral code points is 160 of them and blew the 400-char ceiling), but
+  // sliced on CODE POINT boundaries, so an over-long character is dropped whole
+  // instead of surviving as half a surrogate pair.
+  let title = "";
+  for (const ch of String(info?.title ?? "").trim()) {
+    if (title.length + ch.length > CLIPBOARD_NOTE_TITLE_MAX) break;
+    title += ch;
+  }
+  if (!title) title = "(untitled)";
+  return (
+    "Copied to the clipboard: the staging tab reported COPIED, so it was closed and the working tab is " +
+    `back on "${title}" (tabId ${tabId}). Focus the editor there and paste with press_key exactly as the ` +
+    "copy tool's result said, then re-read the page to confirm the paste landed."
+  );
+}

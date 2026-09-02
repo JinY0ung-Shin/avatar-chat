@@ -245,20 +245,23 @@
   bound to the STAGING USER (`stageClipboardImage(bytes, mime, userId)`, the run's `viewerUserId`: the
   staging page is opened by the viewer's browser) and a foreign token 404s with the SAME body as an
   expired one, so existence never leaks. The agent then drives the ordinary ops: `new_tab` the staging
-  URL → `click` its `클립보드로 복사` button → **`list_tabs` to VERIFY** → `select_tab` back to the
-  target → `press_key` paste → re-read the page. The verification step is not optional: `clipboard.write`
-  can be refused (it needs the window's activation), and without it the agent pastes whatever was
-  already on the clipboard and reports success — so the staging script sets `document.title` to
-  `COPIED` or `COPY_FAILED` as the machine-readable outcome, and the tool text/prompt guidance forbid
-  pasting on anything but `COPIED`. The paste MODIFIER is platform-aware: Ctrl+V is not paste on macOS,
-  so `AgentRequest.viewerPlatform` (from the chat request's User-Agent — the bridge relays into the
-  requesting browser, `viewerPlatformFromUserAgent`) picks `["Meta"]` vs `["Control"]`, and an unknown
-  UA yields a dual instruction rather than a guess. The write survives even when that
-  Noah tab is NOT the foreground OS window, because a CDP-synthesized click (`Input.dispatchMouseEvent`,
-  already in the allowlist) supplies the transient user-activation Chrome's `clipboard.write` accepts
-  in place of focus — the spike's decisive result. So NO new CDP method, NO new wire field, and NO
-  `BROWSER_EXTENSION_MIN_COMPATIBLE` bump: it is a server tool over existing ops. The staging page is
-  CSP-clean under app.ts's strict policy (external `/browser-clip.js`, bytes → `data:` URL before
+  URL → `click` its `클립보드로 복사` button → **read the outcome off THAT click's own result** →
+  `press_key` paste into the target editor → re-read the page. Checking the outcome is not optional:
+  `clipboard.write` can be refused (it needs the window's activation), and without it the agent pastes
+  whatever was already on the clipboard and reports success — so the staging script sets
+  `document.title` to `COPIED` or `COPY_FAILED` as the machine-readable outcome, and the tool
+  text/prompt guidance forbid pasting on anything but `COPIED`. No separate `list_tabs` is needed to
+  see it: `browserTools.report()` has always printed the acted-on tab's title as its `Current page:`
+  line, so the title contract is readable from the click that flipped it. The paste MODIFIER is
+  platform-aware: Ctrl+V is not paste on macOS, so `AgentRequest.viewerPlatform` (from the chat
+  request's User-Agent — the bridge relays into the requesting browser, `viewerPlatformFromUserAgent`)
+  picks `["Meta"]` vs `["Control"]`, and an unknown UA yields a dual instruction rather than a guess.
+  The write survives even when that Noah tab is NOT the foreground OS window, because a
+  CDP-synthesized click (`Input.dispatchMouseEvent`, already in the allowlist) supplies the
+  transient user-activation Chrome's `clipboard.write` accepts in place of focus — the spike's
+  decisive result. So NO new CDP method, NO new wire field, and NO
+  `BROWSER_EXTENSION_MIN_COMPATIBLE` bump: it is a server tool over existing ops. The staging page
+  is CSP-clean under app.ts's strict policy (external `/browser-clip.js`, bytes → `data:` URL before
   `img.src` since `blob:` is blocked), mirroring `client/src/lib/canvasExport.ts`'s `copyPng`.
   `appOrigin` is derived from the chat request (`requestOrigin`, honouring the reverse proxy), so the
   staging page is same-origin with the user's session. Both forwarded headers are CLIENT-controlled and
@@ -277,15 +280,18 @@
   hard-404s everything else under `/browser-clip/` so no path in the exempted namespace can ever fall
   through to the SPA and render the app UI. An older extension simply refuses the staging URL; the tool
   text redirects to updating the extension (or a manual copy via show_file), never to allowlisting
-  Noah. Token format and path shape are a cross-artifact contract (`browserClipboard.ts` ↔
-  `background.js`). (2) Paste rides the EXISTING `press_key` shortcut, which the spike showed pastes an
-  image into a contentEditable; if a real editor (Confluence) ignores the synthetic shortcut, the known
-  upgrade is a `commands:["paste"]` field on `press_key` (the same Blink-editor-command escape hatch
-  `selectAll` already uses) — deferred until measurement shows it is needed. Security posture: the
-  agent NEVER reads the clipboard (no `clipboardRead`, and the only page JS the extension runs is
-  `read_storage`'s fixed Web-Storage expression, which cannot reach the clipboard, so nothing the paste
-  pulled comes back to the model); the one side effect is that the user's prior clipboard
-  contents are overwritten by the image.
+  Noah. 0.27.0 moved that shape test out of `originAllowed`'s inline regex into `axtree.js`'s exported,
+  unit-tested `isClipboardStagingUrl(rawUrl, stagingOrigin)` / `CLIPBOARD_STAGING_PATH_RE` (behaviour
+  byte-identical) so the EXEMPTION and the auto-close bullets below cannot drift into disagreeing
+  about what a staging page is. Token format and path shape are a cross-artifact contract
+  (`browserClipboard.ts` ↔ `axtree.js`). (2) Paste rides the EXISTING `press_key` shortcut, which
+  the spike showed pastes an image into a contentEditable; if a real editor (Confluence) ignores the
+  synthetic shortcut, the known upgrade is a `commands:["paste"]` field on `press_key` (the same
+  Blink-editor-command escape hatch `selectAll` already uses) — deferred until measurement shows it
+  is needed. Security posture: the agent NEVER reads the clipboard (no `clipboardRead`, and the only
+  page JS the extension runs is `read_storage`'s fixed Web-Storage expression, which cannot reach
+  the clipboard, so nothing the paste pulled comes back to the model); the one side effect is that
+  the user's prior clipboard contents are overwritten by the image.
 - **`copy_text` is copy_image's TEXT sibling, and the staging store is MIME-agnostic.** Issue #59's
   root fix: a paste is ingested ATOMICALLY by the editor's own paste handler, which is the reliable
   route for multi-KB content into a virtualized editor where a long `type` gets dropped (the type
@@ -296,10 +302,67 @@
   Content-Type — `text/*` goes verbatim to `navigator.clipboard.writeText` (no ClipboardItem needed,
   so the text mode works even where the image mode cannot), anything else through the existing
   data:-URL → canvas → PNG pipeline. The tool result and both metacognition surfaces script the drive
-  flow: stage → new_tab → click → VERIFY COPIED via list_tabs → select_tab back → focus → select-all
-  when REPLACING (`selectAllInstruction`, OS-branched exactly like `pasteInstruction`: Ctrl+A selects
-  nothing on macOS, and a silently-failed select-all turns REPLACE into APPEND) → paste → re-read.
+  flow: stage → new_tab → click → read `COPIED` off that click's result (a current extension has
+  already closed the staging tab and put you back on the target page; an older one needs `select_tab`
+  back + `close_tab`, next bullets) → focus → select-all when REPLACING (`selectAllInstruction`,
+  OS-branched exactly like `pasteInstruction`: Ctrl+A selects nothing on macOS, and a silently-failed
+  select-all turns REPLACE into APPEND) → paste → re-read.
   Costs stated where they bind: it OVERWRITES the user's clipboard (tool text says so), text staging
   is capped at 1 MB server-side (`MAX_STAGED_TEXT_BYTES`, under the 200k-char schema cap), and the
   expired-token message went generic ("만료되었거나 찾을 수 없는 항목입니다") since the store holds
   text now.
+- **A staging tab that reports `COPIED` CLOSES ITSELF (extension 0.27.0+).** The page has served its
+  purpose the instant its title flips, and leaving it open was the one step of this flow the agent had
+  to remember for no benefit — every copy stranded a dead `클립보드로 복사` tab in the user's Noah
+  group, each one still holding the staged content, and cost the agent a `select_tab` to get home. So
+  the common action tail asks `isClipboardStagingUrl(fresh.url, stagingOrigin) && fresh.title ===
+  CLIPBOARD_COPIED_TITLE` right after `fresh` is read and its origin re-check passes — BEFORE the
+  dialog check and the snapshot read, because there is no longer a page worth reading — and on a match
+  removes the tab and repeats `close_tab`'s per-tab cleanup BY HAND instead of waiting for the async
+  `onRemoved` listener (`attached`, `pendingDialogs`, `forgetTabRefs`, `lastSnapshotByTab`, and the
+  return pairing: the reply built immediately after reads state that has to be correct ALREADY), then
+  re-points the working tab (next bullet) and answers with `snapshot: ""` plus `clipboardCopiedNote`
+  on the `note` channel. The empty snapshot is honest, not lazy: the tab that was acted on no longer
+  exists, and the tab the pointer moved to was deliberately NOT read back, because walking it means
+  ACTIVATING it — the focus theft this file avoids — for a page the agent's very next op reads anyway
+  (that op's `showTab` is what brings it forward). `COPY_FAILED`, or any other title, closes NOTHING:
+  a refused `clipboard.write` is precisely the case where the user has to foreground the window (or
+  press the button themselves) and the agent has to retry, and a closed tab takes that away. It fires
+  for EVERY op that reaches the tail on such a tab, `snapshot` included — a snapshot of a spent page
+  is worth no more than a click on one — while the `new_tab` that OPENED it never matches, since the
+  button page's title is not `COPIED` yet. Fail-open: a `chrome.tabs.remove` that throws (the tab was
+  already gone) still returns the note, and any other throw falls through to the ordinary tail rather
+  than failing an op whose COPY has already succeeded. The title is READ SETTLED, not raw: the page
+  writes `COPIED` only after `navigator.clipboard.write*` resolves — for an image, after it has first
+  fetched the bytes back from Noah — while the tail reads the tab only ~350ms after the click, so an
+  INPUT op on a staging page whose title is still undecided re-polls `chrome.tabs.get` up to 4 × 250ms
+  (`settledClipStagingTab`), stopping on `COPIED` or `COPY_FAILED`, on a vanished tab, or on a
+  navigation away from the staging URL; `fresh` is replaced by the settled read so the ordinary tail
+  reports a settled `COPY_FAILED` too. A plain `snapshot` of an un-pressed staging page never waits,
+  and no user page ever pays this wait. Without it the auto-close rarely fired for images and the
+  guidance's "unchanged title means the copy did NOT happen" turned a success into a false failure.
+- **The tab to return to is REMEMBERED at `new_tab` time, because the open and the click are different
+  TURNS.** A `new_tab` of a staging URL reads the working-tab id BEFORE anything can overwrite it
+  (`currentTabId ?? storedTabId()`, taken ahead of `setCurrentTab(created.id)` — after that the
+  pre-staging id exists nowhere else) and keys it under the tab it just created, in a Map bounded at 20
+  pairs (insertion order, so the bound drops the STALEST pairing rather than the one an agent is still
+  driving) that is ALSO mirrored in `chrome.storage.session` for the same reason `WORKING_TAB_KEY` is
+  (addressing.md): the MV3 worker idles out between those two turns and module state dies with it, so
+  an in-memory-only map would answer "no previous working tab was remembered" for every copy in the
+  field. That mirror is merged in ONCE per worker life with module entries winning, and each write
+  chains after the hydrate, so a fresh worker whose map is still empty merges instead of clobbering a
+  pairing the mirror is holding. The auto-close then restores the remembered id only while it is still
+  IN the Noah group, else `null` — never a guess at a likely-looking tab — which is why
+  `clipboardCopiedNote` has TWO shapes: return tab KNOWN (it quotes that page's title, ≤ 80 code units
+  sliced on code-point boundaries, with its tabId, and says to paste there) and UNKNOWN (it tells the
+  agent to `list_tabs` and `select_tab` its own target). Both stay under 400 chars so a working-tab
+  notice can still share `capNote`'s 480-char budget. The pairing is dropped by the `close_tab` branch
+  and by the global `onRemoved` listener, which covers the closes the bridge did NOT do: a staging tab
+  the user closed by hand, or one abandoned on `COPY_FAILED`.
+- **Both extension generations get ONE script** (contract.md: no new wire field, so
+  `BROWSER_EXTENSION_MIN_COMPATIBLE` stays 0.6.0 and an OLDER build keeps today's flow). The tool text
+  and both metacognition surfaces therefore name the signal every build produces — `COPIED` in the
+  click result's `Current page:` line — and then split ONE sentence per generation: current, the bridge
+  has already closed the staging tab and its note says which page the working tab is back on; older,
+  the tab stays open, so `select_tab` back to the target and `close_tab` the staging tab by hand. The
+  forbidden action is identical in both: never paste on anything but `COPIED`.

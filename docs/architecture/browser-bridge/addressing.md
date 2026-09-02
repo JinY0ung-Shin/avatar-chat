@@ -95,7 +95,11 @@
   gone the bridge falls back to another tab in the group and says WHICH through the `note` channel; a
   tab the page opened itself (`target=_blank`) is announced the same way. `list_tabs`' `*` marks that
   tab, and its description now says the marker means "the working tab, pinned until you switch it or it
-  closes" — the agent used to read `*` as "wherever we happen to be".
+  closes" — the agent used to read `*` as "wherever we happen to be". The ONE place the bridge
+  re-points that pin on its own initiative is the clipboard-staging auto-close (actions.md): closing a
+  `COPIED` staging tab restores the id remembered when `new_tab` opened it, or `null` when that tab is
+  gone — never a guess at a plausible substitute — so the unknown case still falls into `targetTab`'s
+  oldest-tab fallback and is ANNOUNCED through the same `note`, exactly as when a tab closes by itself.
 - **The common action tail settles, and it never reports a done action as failed.** `SETTLE_OPS`
   (INPUT_OPS + navigate/navigate_back/new_tab/handle_dialog) wait `ACTION_SETTLE_MS` (350) before the
   tail re-reads the tab: a page's answer to input is async, so the old immediate snapshot showed the

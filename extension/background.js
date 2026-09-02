@@ -50,6 +50,10 @@ import {
   screenshotImageNote,
   pixelPointNote,
   pixelDragNote,
+  isClipboardStagingUrl,
+  clipboardCopiedNote,
+  CLIPBOARD_COPIED_TITLE,
+  CLIPBOARD_COPY_FAILED_TITLE,
   EXTRA_CLICKABLE_MAX,
   EXTRA_CLICKABLE_GROUP_HEAD,
 } from "./axtree.js";
@@ -547,6 +551,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   pendingDialogs.delete(tabId);
   forgetTabRefs(tabId);
   lastSnapshotByTab.delete(tabId);
+  // Covers the closes the bridge did NOT do: a staging tab the user closed by
+  // hand, or one abandoned on COPY_FAILED. Its return pairing is dead either way.
+  forgetClipReturn(tabId);
   if (currentTabId === tabId) setCurrentTab(null);
 });
 
@@ -774,6 +781,165 @@ async function storedTabId() {
 }
 
 /**
+ * Staging tab id -> the tab the agent was working in when it opened that
+ * clipboard staging tab.
+ *
+ * The auto-close has to put the working pointer BACK, and by the time the copy
+ * button is clicked the pre-staging id exists nowhere else: `new_tab` already
+ * overwrote `currentTabId` with the staging tab. Mirrored in
+ * chrome.storage.session for the same reason WORKING_TAB_KEY is — the `new_tab`
+ * and the `click` are separate agent TURNS and the MV3 worker idles out between
+ * them, which would otherwise turn every copy into "no previous working tab was
+ * remembered". Bounded because an abandoned staging tab (COPY_FAILED, or the
+ * user closing the window) leaves its entry behind until onRemoved fires.
+ */
+const clipStagingReturnTabs = new Map();
+const CLIP_RETURN_KEY = "clipStagingReturnTabs";
+const CLIP_RETURN_MAX = 20;
+
+/**
+ * Merge the session mirror in ONCE per worker life. Module entries win: within
+ * one life they are the fresher truth, and the mirror exists only to survive the
+ * restart between the two turns.
+ */
+let clipReturnsLoaded = null;
+function loadClipReturns() {
+  clipReturnsLoaded ??= (async () => {
+    try {
+      const stored = await chrome.storage.session.get(CLIP_RETURN_KEY);
+      const plain = stored?.[CLIP_RETURN_KEY];
+      if (!plain || typeof plain !== "object") return;
+      for (const [staging, back] of Object.entries(plain)) {
+        const stagingId = Number(staging);
+        if (!Number.isInteger(stagingId) || typeof back !== "number") continue;
+        if (!clipStagingReturnTabs.has(stagingId)) clipStagingReturnTabs.set(stagingId, back);
+      }
+    } catch {
+      // No mirror readable = the auto-close reports "nothing remembered", which
+      // is the honest answer and already one of its two shapes.
+    }
+  })();
+  return clipReturnsLoaded;
+}
+
+/**
+ * Fire and forget, exactly like setCurrentTab: module state is already correct,
+ * and a storage failure must degrade to "forgets between turns" rather than fail
+ * the operation. Chained after the hydrate so a write from a FRESH worker — its
+ * map empty while the mirror still holds a pending pair — merges instead of
+ * clobbering it.
+ */
+function writeClipReturns() {
+  Promise.resolve(loadClipReturns())
+    .then(() => {
+      if (!clipStagingReturnTabs.size) return chrome.storage.session.remove(CLIP_RETURN_KEY);
+      const plain = {};
+      for (const [staging, back] of clipStagingReturnTabs) plain[String(staging)] = back;
+      return chrome.storage.session.set({ [CLIP_RETURN_KEY]: plain });
+    })
+    .catch(() => {});
+}
+
+function rememberClipReturn(stagingTabId, returnTabId) {
+  if (typeof stagingTabId !== "number" || typeof returnTabId !== "number") return;
+  clipStagingReturnTabs.set(stagingTabId, returnTabId);
+  // Insertion order, so the bound drops the STALEST pairing rather than the one
+  // just made — the newest is the only one an agent is still driving.
+  while (clipStagingReturnTabs.size > CLIP_RETURN_MAX) {
+    clipStagingReturnTabs.delete(clipStagingReturnTabs.keys().next().value);
+  }
+  writeClipReturns();
+}
+
+function forgetClipReturn(stagingTabId) {
+  if (!clipStagingReturnTabs.delete(stagingTabId)) return;
+  writeClipReturns();
+}
+
+/** Where a closing staging tab should send the pointer, or null if unknown. */
+async function clipReturnFor(stagingTabId) {
+  if (!clipStagingReturnTabs.has(stagingTabId)) await loadClipReturns();
+  const back = clipStagingReturnTabs.get(stagingTabId);
+  return typeof back === "number" ? back : null;
+}
+
+/**
+ * Wait out the staging page's own async work before its title is JUDGED — see
+ * CLIP_TITLE_SETTLE_MS for the race this exists for.
+ *
+ * Scoped to this page alone: it is Noah's own throwaway page, so no user page
+ * ever pays the wait. Returns as soon as the title is decided either way, and a
+ * page that never decides answers with whatever it last held — an undecided
+ * title closes nothing, which is the same answer the wait started from.
+ */
+async function settledClipStagingTab(staging, stagingOrigin) {
+  const decided = (title) => title === CLIPBOARD_COPIED_TITLE || title === CLIPBOARD_COPY_FAILED_TITLE;
+  let latest = staging;
+  const deadline = Date.now() + CLIP_TITLE_SETTLE_MS;
+  while (!decided(latest.title) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, CLIP_TITLE_POLL_MS));
+    let next;
+    try {
+      next = await chrome.tabs.get(staging.id);
+    } catch {
+      break; // Gone mid-wait: answer with the last thing actually seen.
+    }
+    // A page that navigated AWAY is no longer the staging page this loop may
+    // judge — or close — and its new landing was never origin-checked.
+    if (!isClipboardStagingUrl(next.url, stagingOrigin)) break;
+    latest = next;
+  }
+  return latest;
+}
+
+/**
+ * Close a SPENT clipboard staging tab and answer the op with the note instead of
+ * a snapshot.
+ *
+ * Same cleanup close_tab does. The onRemoved listener does it too, but
+ * asynchronously — the result built below reads state that has to be correct
+ * ALREADY, so it is done here by hand rather than raced.
+ */
+async function closeClipStagingTab(staging, note) {
+  const back = await clipReturnFor(staging.id);
+  try {
+    await chrome.tabs.remove(staging.id);
+  } catch {
+    // Already gone (the user closed it, or an earlier op did). The pointer work
+    // below is still exactly what this op owes the agent, so this is not a
+    // failure — nothing about the copy depended on who removed the tab.
+  }
+  attached.delete(staging.id);
+  pendingDialogs.delete(staging.id);
+  forgetTabRefs(staging.id);
+  lastSnapshotByTab.delete(staging.id);
+  forgetClipReturn(staging.id);
+  const left = await groupedTabs();
+  // Validated against the group like every other pointer here: a remembered tab
+  // the user has since closed or dragged out grants nothing, and degrades to
+  // "nothing remembered" rather than to a guess. targetTab's oldest-tab fallback
+  // owns that case and says so out loud.
+  const returnTab = back == null ? undefined : left.find((one) => one.id === back);
+  setCurrentTab(returnTab ? returnTab.id : null);
+  return {
+    ok: true,
+    // No snapshot: the tab that was acted on no longer EXISTS, and the tab the
+    // pointer moved to was deliberately not read back — activating it to walk it
+    // would steal the focus this file avoids stealing, for a page the agent's
+    // very next op reads anyway.
+    snapshot: "",
+    url: returnTab?.url || "",
+    title: returnTab?.title || "",
+    tabs: left.map(describeTab),
+    note: capNote(
+      [note, clipboardCopiedNote({ title: returnTab?.title, tabId: returnTab?.id })]
+        .filter(Boolean)
+        .join(" "),
+    ),
+  };
+}
+
+/**
  * BRIDGE-authored caveat about WHICH TAB the bridge is on, left here by
  * targetTab and drained by perform() into the result's `note`. A guess about the
  * working tab has to be visible in the same turn it is made — the field failure
@@ -848,16 +1014,10 @@ function originAllowed(rawUrl, patterns, stagingOrigin) {
   // (sender.origin is browser-verified via externally_connectable), without the
   // operator listing Noah itself: allowlisting the app origin would make the
   // whole logged-in Noah UI drivable by an agent whose inputs include untrusted
-  // page text. The match is the EXACT token-page shape, never a prefix — the
-  // server hard-404s the rest of /browser-clip/ too, but a prefix would trust
-  // the server's routing to keep the SPA out of an exempted path.
-  if (
-    stagingOrigin &&
-    url.origin === stagingOrigin &&
-    /^\/browser-clip\/[0-9a-f]{32}$/.test(url.pathname)
-  ) {
-    return true;
-  }
+  // page text. The test lives in axtree.js because the auto-close in the action
+  // tail asks the SAME question, and two copies of "is this a staging page?"
+  // would be two chances for the exemption and the close to disagree.
+  if (isClipboardStagingUrl(rawUrl, stagingOrigin)) return true;
   return patterns.some((pattern) => {
     if (pattern === "*") return true;
     // `*.corp.local` matches sub.corp.local but NOT corp.local itself, so a
@@ -2160,6 +2320,22 @@ const STALE_SNAPSHOT_REPOLL_MS = 250;
  */
 const EMPTY_SNAPSHOT_REPOLL_MS = 500;
 const EMPTY_SNAPSHOT_REPOLLS = 3;
+/**
+ * How long an INPUT op will wait for a clipboard staging page to DECIDE its own
+ * title before the auto-close judges it. The title is written only after the
+ * async `navigator.clipboard.write*` promise resolves — for an image copy, after
+ * the page has first fetched its bytes back from Noah — and the browser-side
+ * `tab.title` follows a beat later over IPC, while the tail's
+ * `chrome.tabs.get` runs milliseconds after clickPoint. The old flow never met
+ * this race because the agent read the title with `list_tabs` a whole TURN
+ * later; reading it in the same op does, and a stale title would return an
+ * ordinary snapshot titled "클립보드로 복사" — which the guidance tells the agent to
+ * read as "the copy did NOT happen". A false failure on a copy that worked.
+ * Bounded, and short polls rather than one long wait so the common case (already
+ * decided, or a beat behind) costs a beat.
+ */
+const CLIP_TITLE_SETTLE_MS = 1500;
+const CLIP_TITLE_POLL_MS = 75;
 /**
  * What an empty walk says about itself. An action that NAVIGATES can outrun
  * waitForLoad — a form submit or a script-driven navigation may start after
@@ -5112,6 +5288,13 @@ async function performOp(message, stagingOrigin) {
     if (!originAllowed(message.url, patterns, stagingOrigin)) {
       return refuseOrigin(message.url, source);
     }
+    // A clipboard staging page is a THROWAWAY the bridge closes itself once the
+    // page's title reports COPIED, so where the agent is right now is the thing
+    // the close will have to restore. Read before anything below can move the
+    // pointer: setCurrentTab(created.id) overwrites it, and after that the
+    // pre-staging id is gone for good.
+    const stagingTab = isClipboardStagingUrl(message.url, stagingOrigin);
+    const returnTo = stagingTab ? (currentTabId ?? (await storedTabId())) : null;
     let group = await noahGroup();
     // No group = browser control is currently OFF in this browser. Turning it
     // on must be the user's click, not a tab-creation side effect, so ask
@@ -5133,6 +5316,7 @@ async function performOp(message, stagingOrigin) {
       await chrome.tabGroups.update(groupId, { title: GROUP_TITLE, color: "green" });
     }
     setCurrentTab(created.id);
+    if (stagingTab && returnTo != null) rememberClipReturn(created.id, returnTo);
     await waitForLoad(created.id);
   }
 
@@ -5156,6 +5340,7 @@ async function performOp(message, stagingOrigin) {
     attached.delete(picked.id);
     forgetTabRefs(picked.id);
     lastSnapshotByTab.delete(picked.id);
+    forgetClipReturn(picked.id);
     if (currentTabId === picked.id) setCurrentTab(null);
     const left = await groupedTabs();
     if (!left.length) {
@@ -6110,9 +6295,39 @@ async function performOp(message, stagingOrigin) {
   // Re-check where we actually LANDED before reading the page: a permitted URL
   // can redirect somewhere denied, and the snapshot is the exfiltration path
   // that matters (reading a logged-in page is the risk, not just acting on it).
-  const fresh = await chrome.tabs.get(tab.id);
+  let fresh = await chrome.tabs.get(tab.id);
   if (fresh.url && !originAllowed(fresh.url, patterns, stagingOrigin)) {
     return refuseLanding(message.op, fresh.url, source);
+  }
+
+  // The clipboard staging page has ONE job and its own title says when it is
+  // done: the server's BROWSER_CLIP_SCRIPT writes "COPIED" the moment
+  // clipboard.write* resolves. The tab is spent at that point, so close it and
+  // put the pointer back on the page the agent came from — left open, every copy
+  // strands a dead tab in the user's group and costs the agent a select_tab to
+  // get home. Any op that lands here on a COPIED staging page closes it: a
+  // snapshot of a spent page is worth no more than a click on one. The `new_tab`
+  // that OPENED it never matches, because the button page's title is still
+  // "클립보드로 복사". "COPY_FAILED" and any other title are left ALONE on purpose —
+  // the copy did not happen, and the tab has to still be there for the user to
+  // foreground the window and press the button, or for the agent to retry.
+  if (isClipboardStagingUrl(fresh.url, stagingOrigin)) {
+    // Only an INPUT op can have CAUSED a copy, so only an input op is worth
+    // waiting on: a plain snapshot of an un-pressed staging page must not pay
+    // CLIP_TITLE_SETTLE_MS for a title that has no reason to change. `fresh` is
+    // REPLACED rather than read beside, so the auto-close below and the ordinary
+    // tail both see the settled title — the COPY_FAILED the agent has to act on
+    // is exactly as easy to read too early as the COPIED it must not miss.
+    if (INPUT_OPS.has(message.op)) fresh = await settledClipStagingTab(fresh, stagingOrigin);
+    if (fresh.title === CLIPBOARD_COPIED_TITLE) {
+      try {
+        return await closeClipStagingTab(fresh, note);
+      } catch {
+        // Fail-open. The COPY already succeeded, so failing the op over the
+        // tidying that follows it would send the agent to re-copy bytes that are
+        // on the clipboard right now. Answer the op the ordinary way instead.
+      }
+    }
   }
 
   // A dialog may have opened as a RESULT of the action (click → confirm). The

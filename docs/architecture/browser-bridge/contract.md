@@ -107,3 +107,17 @@
   case by decoding the image itself and adding an oversize caveat with the correction factor
   (addressing.md). The composer badge does the rest: at or above the floor but behind the bundle is
   `compatible`, blue, with an update prompt.
+- **0.27.0's clipboard-staging auto-close adds NO wire field either, and the floor stays 0.6.0.** When
+  a `/browser-clip/` tab's title reads `COPIED` the extension closes it and re-points the working tab
+  (actions.md); the outcome travels on the SAME `note` channel 0.26.0's geometry notes use —
+  `clipboardCopiedNote` merged by `capNote` inside the 480-char budget, sliced to 500 by
+  `routes/chat.ts`, printed as the `Note from the browser bridge:` line OUTSIDE the untrusted wrapper —
+  and the reply's existing `snapshot`/`url`/`title`/`tabs` fields carry the rest (`snapshot: ""`, since
+  the tab that was acted on is gone). No new op name, no new field, nothing for the five layers to
+  learn, and an older build simply leaves the tab open and sends no note: a tidiness degrade, not a
+  broken contract. That is exactly WHY the server side must stay TWO-GENERATION. Nothing in a tool
+  call carries the installed extension version, so the tool text and both metacognition surfaces
+  cannot branch on it — they pin the signal both builds produce (`COPIED` in the click result's
+  `Current page:` line, which `browserTools.report()` has always printed) and then name what each
+  generation leaves behind. Scripting only the new behaviour would strand every install on the
+  `compatible` rung with an orphaned staging tab and an agent waiting for a note that never comes.
