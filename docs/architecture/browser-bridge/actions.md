@@ -335,8 +335,9 @@
   than failing an op whose COPY has already succeeded. The title is READ SETTLED, not raw: the page
   writes `COPIED` only after `navigator.clipboard.write*` resolves — for an image, after it has first
   fetched the bytes back from Noah — while the tail reads the tab only ~350ms after the click, so an
-  INPUT op on a staging page whose title is still undecided re-polls `chrome.tabs.get` up to 4 × 250ms
-  (`settledClipStagingTab`), stopping on `COPIED` or `COPY_FAILED`, on a vanished tab, or on a
+  INPUT op on a staging page whose title is still undecided re-polls `chrome.tabs.get` every 75ms for
+  up to 1.5s (`settledClipStagingTab`, `CLIP_TITLE_SETTLE_MS` / `CLIP_TITLE_POLL_MS` — a field-shaped
+  flip at 1.2s is caught), stopping on `COPIED` or `COPY_FAILED`, on a vanished tab, or on a
   navigation away from the staging URL; `fresh` is replaced by the settled read so the ordinary tail
   reports a settled `COPY_FAILED` too. A plain `snapshot` of an un-pressed staging page never waits,
   and no user page ever pays this wait. Without it the auto-close rarely fired for images and the
