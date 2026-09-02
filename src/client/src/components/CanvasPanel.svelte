@@ -33,7 +33,7 @@
 
   let collapsed = false;
   const CANVAS_WIDTH_MIN = 300;
-  const CANVAS_WIDTH_MAX = 760;
+  const CANVAS_WIDTH_MAX = 1520;
   const CANVAS_WIDTH_DEFAULT = 440;
   let panelWidth = CANVAS_WIDTH_DEFAULT;
 

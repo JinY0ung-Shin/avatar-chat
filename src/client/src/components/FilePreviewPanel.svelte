@@ -21,7 +21,7 @@
   $: slides = preview?.slides ?? [];
 
   const WIDTH_MIN = 300;
-  const WIDTH_MAX = 760;
+  const WIDTH_MAX = 1520;
   const WIDTH_DEFAULT = 440;
   let panelWidth = WIDTH_DEFAULT;
 
