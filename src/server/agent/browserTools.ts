@@ -698,7 +698,11 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "Two other refusals are not retryable either: a FILE-UPLOAD input opens an OS file dialog no tool " +
         "can reach or close, so ask the user to attach the files themselves; and a click whose target is " +
         "COVERED by another element is refused naming that element — an open modal, overlay, or cookie " +
-        "banner is in the way, so close it (Escape, or its own close control) before clicking again.",
+        "banner is in the way, so close it (Escape, or its own close control) before clicking again. " +
+        "Clicking a menu or disclosure trigger (one with a popup) TOGGLES it, and the returned note reports " +
+        "whether it actually opened — if it did NOT, the browser window may have been inactive, so bring it " +
+        'to the foreground and retry, or focus the trigger and `press_key` "Enter" (or "ArrowDown"); do not ' +
+        "just click a second time, which closes a menu that did open.",
       {
         uid: z.string().min(1).max(120).describe("Element uid from the latest snapshot."),
         maxChars: MAX_CHARS_SCHEMA,
@@ -1544,7 +1548,11 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         selectAllInstruction(ctx.viewerPlatform) +
         " when you are REPLACING what it already holds, " +
         pasteInstruction(ctx.viewerPlatform) +
-        ", then RE-READ the page (`snapshot` or `read_text`) to confirm the text actually landed. The " +
+        ", then RE-READ the page (`snapshot` or `read_text`) to confirm it landed. Into a contentEditable " +
+        "or iframe rich editor (TinyMCE and the like) a paste can APPEAR in the immediate snapshot WITHOUT " +
+        "the editor committing it (issue #65): read again a moment later, verify through the editor's " +
+        "source/markup view, and prefer a plain <textarea> source editor when one exists — it commits " +
+        "reliably. The " +
         "staging page is allowed automatically by the Noah extension (the exemption covers ONLY " +
         "/browser-clip/ token pages) — NEVER tell the user to add Noah's own origin to the browser-control " +
         "allowlist; that would expose the whole logged-in Noah UI to browser control. If new_tab refuses " +
@@ -1589,7 +1597,11 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
               ".  5) Paste — mcp__browser__" +
               pasteInstruction(ctx.viewerPlatform) +
               ".  6) RE-READ the page (mcp__browser__snapshot or read_text) to confirm the text actually " +
-              "landed before reporting success — never assume the paste worked.  The staging link expires " +
+              "landed before reporting success — never assume the paste worked. Into a contentEditable or " +
+              "iframe rich editor (TinyMCE and the like) the paste can SHOW in the immediate snapshot " +
+              "without the editor committing it (issue #65): read again a moment later, verify via the " +
+              "editor's source/markup view, and prefer a plain <textarea> source editor when one exists.  " +
+              "The staging link expires " +
               "in ~2 minutes.",
           );
         } catch (err) {

@@ -35,6 +35,10 @@ import {
   axProp,
   axValueAnswer,
   clearFailed,
+  ariaExpandedOf,
+  isDisclosureTrigger,
+  disclosureClickOutcome,
+  pastedTextVanished,
   extraClickables,
   groupClickableItems,
   ariaSortByBackendId,
@@ -2460,11 +2464,17 @@ async function shotCssPoint(tab, x, y) {
   };
 }
 
-/** A described DOM node's attributes as an object — CDP hands them back flat. */
+/**
+ * A described DOM node's attributes as an object — CDP hands them back flat.
+ * Keys are lowercased: HTML already lowercases attribute names, but the axtree
+ * disclosure helpers (isDisclosureTrigger / ariaExpandedOf) look attributes up
+ * by lowercase name, and every reader here (attrOf, buildDomHint, renderNodeBrief)
+ * asks for lowercase names too, so normalizing at the source is safe.
+ */
 function flatAttrs(node) {
   const attrs = {};
   const flat = node?.attributes || [];
-  for (let i = 0; i + 1 < flat.length; i += 2) attrs[flat[i]] = flat[i + 1];
+  for (let i = 0; i + 1 < flat.length; i += 2) attrs[String(flat[i]).toLowerCase()] = flat[i + 1];
   return attrs;
 }
 
@@ -3345,6 +3355,51 @@ function capNote(note) {
   const text = String(note || "");
   return text.length > NOTE_MAX ? `${text.slice(0, NOTE_MAX)}…` : text;
 }
+
+/** Code-point length of a read value; null when the value was unreadable. */
+const codePointLen = (value) => (typeof value === "string" ? [...value].length : null);
+
+/**
+ * #64: a disclosure trigger flips its `aria-expanded` a beat AFTER the click
+ * event, so the state is re-read once the page has had time to toggle it.
+ */
+const DISCLOSURE_SETTLE_MS = 200;
+
+/**
+ * #64 outcome notes. A menu/disclosure trigger click that did not leave the
+ * menu open, split by which of the two failure modes it was — both a single
+ * `aria-expanded` reading apart, and neither reported unless the DOM answered.
+ */
+const DISCLOSURE_NOT_OPENED_NOTE =
+  'This looks like a menu/disclosure trigger but it did NOT open (aria-expanded is still not true). ' +
+  'The click may have been dropped because the browser window was inactive or covered. Do NOT just click ' +
+  'again — a second click TOGGLES an open menu shut. Bring the window to the foreground and retry, or focus ' +
+  'the trigger and press_key "Enter" (or "ArrowDown").';
+const DISCLOSURE_TOGGLED_CLOSED_NOTE =
+  'This click CLOSED a menu that was already open — a disclosure trigger toggles on each click. Click once ' +
+  'to open; do not double-click.';
+
+/**
+ * #65: when a paste's DISPLAYED peak is read, and when the editor has had long
+ * enough to drop it again if it never committed it. Both are ms after dispatch.
+ */
+const PASTE_PEAK_MS = 150;
+const PASTE_SETTLE_MS = 700;
+
+/**
+ * #65 notes. The advisory is the floor emitted on every paste shortcut — a
+ * rich-text/iframe editor can SHOW a paste it never commits — and the vanished
+ * note replaces it only on a measured grow-then-shrink (`pastedTextVanished`).
+ */
+const PASTE_ADVISORY_NOTE =
+  "Paste dispatched. A rich-text or iframe editor (TinyMCE / contentEditable) can DISPLAY pasted text in " +
+  "this snapshot without committing it to its model (issue #65). Re-read after a moment (a second " +
+  "snapshot/read_text) and verify via the editor's source/markup view, or a plain <textarea> source " +
+  "editor — do not trust this immediate snapshot alone.";
+const PASTE_VANISHED_NOTE =
+  "The pasted text APPEARED then VANISHED — the editor showed it, then dropped it without committing " +
+  "(issue #65). It was NOT saved. Paste into a plain <textarea> source editor, or use the editor's " +
+  "source/markup view.";
 
 /** Read the field back once the page has had its beat to re-assert its model. */
 async function settledValue(valueNode) {
@@ -5421,6 +5476,27 @@ async function performOp(message, stagingOrigin) {
     // drawn box takes no part in hit-testing, so the obscured check below still
     // sees the page (probe-measured, `tests/visual/overlay-highlight.spec.ts`).
     showActionHighlight(ref);
+    // #64: read the disclosure state BEFORE the click, but only if this element
+    // is a menu/disclosure trigger. A trigger toggles on each click, so a bridge
+    // that answers a bare "clicked" for a menu that stayed shut invites the agent
+    // to click again and close the menu the first press opened. Fail open: any
+    // CDP error leaves it an ordinary click with no note.
+    let disclosureTrigger = false;
+    let expandedBefore = null;
+    try {
+      const { node } = await sendCdp(
+        { tabId: ref.tabId, sessionId: ref.sessionId },
+        "DOM.describeNode",
+        { backendNodeId: ref.backendNodeId, depth: 0 },
+      );
+      const attrs = flatAttrs(node);
+      if (isDisclosureTrigger(attrs)) {
+        disclosureTrigger = true;
+        expandedBefore = ariaExpandedOf(attrs);
+      }
+    } catch {
+      // fail open — treat as an ordinary click
+    }
     // Guards and click stay INSIDE the race: every step here talks to the
     // renderer, and a dialog raised by a page timer mid-measurement would hang
     // the scroll/quad reads exactly as it would hang the click itself.
@@ -5436,6 +5512,25 @@ async function performOp(message, stagingOrigin) {
       })(),
     );
     await waitForLoad(tab.id, 5000);
+    // #64: did the trigger actually open? Re-read `aria-expanded` after a beat
+    // and note the two failure modes — never the successes, never a guess. Fail
+    // open: a read error leaves no note, exactly as a non-trigger click does.
+    if (disclosureTrigger) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, DISCLOSURE_SETTLE_MS));
+        const { node } = await sendCdp(
+          { tabId: ref.tabId, sessionId: ref.sessionId },
+          "DOM.describeNode",
+          { backendNodeId: ref.backendNodeId, depth: 0 },
+        );
+        const outcome = disclosureClickOutcome(expandedBefore, ariaExpandedOf(flatAttrs(node)));
+        if (outcome === "not-opened") note = DISCLOSURE_NOT_OPENED_NOTE;
+        else if (outcome === "toggled-closed") note = DISCLOSURE_TOGGLED_CLOSED_NOTE;
+        // "opened" and "unknown" stay quiet.
+      } catch {
+        // fail open — no note
+      }
+    }
   } else if (message.op === "click_at" && typeof message.uid === "string" && message.uid) {
     // uid mode: a RELATIVE position inside a known element. No screenshot is
     // involved, so this is the escape hatch that still works for a canvas or a
@@ -5725,10 +5820,11 @@ async function performOp(message, stagingOrigin) {
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "press_key") {
     let target = { tabId: tab.id };
+    let ref = null;
     if (message.uid) {
       const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
       if (refused) return refused;
-      const ref = resolveRef(message.uid);
+      ref = resolveRef(message.uid);
       // Only when a uid was given: a keystroke aimed at the page as a whole has
       // no subject element to point at.
       showActionHighlight(ref);
@@ -5739,6 +5835,29 @@ async function performOp(message, stagingOrigin) {
       await focusForInput(ref);
     }
     const repeat = Math.min(Math.max(Math.round(Number(message.repeat) || 1), 1), 50);
+    // #65: a paste shortcut (Ctrl/Cmd+V). A rich-text/iframe editor can DISPLAY
+    // a paste it never commits, so an immediate snapshot reads as success while
+    // the text is dropped. Detection is pure JS — non-paste keys stay zero-cost.
+    const pasteModifiers = Array.isArray(message.modifiers) ? message.modifiers : [];
+    const isPaste =
+      String(message.key || "").toLowerCase() === "v" &&
+      (pasteModifiers.includes("Control") || pasteModifiers.includes("Meta"));
+    // The grow-then-shrink measurement needs a readable target, so it runs ONLY
+    // with a uid (a value node is then cheaply resolvable). Read `before` PRE-
+    // dispatch. Fail open: any error leaves just the advisory note below.
+    let pasteValueNode = null;
+    let pasteBefore = null;
+    if (isPaste && ref) {
+      try {
+        const resolved = await resolveValueNode(ref);
+        if (resolved) {
+          pasteValueNode = resolved.ref;
+          pasteBefore = codePointLen(resolved.value);
+        }
+      } catch {
+        // fail open — advisory note only
+      }
+    }
     await raceDialogOpen(
       tab.id,
       (async () => {
@@ -5750,6 +5869,22 @@ async function performOp(message, stagingOrigin) {
     );
     // Enter and shortcuts can submit or navigate, same as a click.
     await waitForLoad(tab.id, 5000);
+    // #65: warn that the paste may only be DISPLAYED. The advisory is the floor
+    // (uid or not); a measured grow-then-shrink upgrades it to the vanished note.
+    if (isPaste) {
+      note = PASTE_ADVISORY_NOTE;
+      if (pasteValueNode) {
+        try {
+          await new Promise((resolve) => setTimeout(resolve, PASTE_PEAK_MS));
+          const peak = codePointLen(await readAxValue(pasteValueNode));
+          await new Promise((resolve) => setTimeout(resolve, PASTE_SETTLE_MS - PASTE_PEAK_MS));
+          const settled = codePointLen(await readAxValue(pasteValueNode));
+          if (pastedTextVanished(pasteBefore, peak, settled)) note = PASTE_VANISHED_NOTE;
+        } catch {
+          // fail open — keep the advisory note
+        }
+      }
+    }
   } else if (message.op === "hover") {
     const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;

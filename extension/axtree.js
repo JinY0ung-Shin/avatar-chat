@@ -178,6 +178,99 @@ export function clearFailed(before, after, value) {
 }
 
 /**
+ * The `aria-expanded` reading of a described element, three-way: true, false, or
+ * null when the element does not report it at all. The three-way answer is the
+ * whole point — a trigger that never carries the attribute is UNVERIFIABLE, and
+ * folding that into `false` would report every such click as a failed open.
+ *
+ * `attrs` is a DOM.Node's flat attributes array reduced to an object
+ * (background.js `flatAttrs`); anything else reads as "does not report it".
+ */
+export function ariaExpandedOf(attrs) {
+  const raw = attrs && typeof attrs === "object" ? attrs["aria-expanded"] : undefined;
+  if (raw === undefined || raw === null) return null;
+  const value = String(raw).trim().toLowerCase();
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
+}
+
+/**
+ * True when an element advertises that it OWNS a popup — the shape a click is
+ * meant to OPEN rather than merely activate. Any one of the three ARIA
+ * disclosure markers counts: `aria-expanded` (the state itself),
+ * `aria-haspopup` (anything but the explicit "false"), or `aria-controls` (the
+ * menu it owns).
+ *
+ * Read off the DOM on purpose. AUI's dropdown2 trigger — the component behind
+ * Confluence's legacy editor toolbar — carries and TOGGLES `aria-expanded` in
+ * the DOM while exposing no expanded/collapsed state in the accessibility tree
+ * at all (it renders as a plain `link`), so the AX tree cannot answer the one
+ * question issue #64 needed answered.
+ */
+export function isDisclosureTrigger(attrs) {
+  if (!attrs || typeof attrs !== "object") return false;
+  if ("aria-expanded" in attrs) return true;
+  const haspopup = String(attrs["aria-haspopup"] ?? "")
+    .trim()
+    .toLowerCase();
+  if (haspopup && haspopup !== "false") return true;
+  return Boolean(String(attrs["aria-controls"] ?? "").trim());
+}
+
+/**
+ * What a click on a disclosure trigger actually DID, from the `aria-expanded`
+ * pair read around it (each side true / false / null, per `ariaExpandedOf`):
+ *
+ *   "opened"         — it is open now. Nothing worth saying.
+ *   "toggled-closed" — it was open and this click SHUT it. A trigger toggles.
+ *   "not-opened"     — it reports a state, and that state is still not open.
+ *   "unknown"        — no state on either side: unverifiable, so say nothing.
+ *
+ * Issue #64: the bridge answered a bare "clicked" for a menu that stayed shut
+ * (the press was dropped while the browser window was covered), the agent read
+ * that as success, clicked again — and the second click closed the menu the
+ * first one had opened. Both failure modes are one attribute apart, and neither
+ * is worth GUESSING at, which is what the explicit "unknown" is for: a trigger
+ * that reports nothing must never be reported as broken.
+ */
+export function disclosureClickOutcome(before, after) {
+  if (after === true) return "opened";
+  if (before === true) return "toggled-closed";
+  if (before === null && after === null) return "unknown";
+  return "not-opened";
+}
+
+/**
+ * Smallest growth worth calling a paste, and how much of it may survive while
+ * the paste still counts as gone — both in code points. A one- or two-character
+ * wobble is the page's own reformatting (a trailing newline, a collapsed
+ * space), not a paste, and asserting on it would invent data loss.
+ */
+export const PASTE_GROWTH_MIN = 4;
+export const PASTE_VANISH_EPSILON = 2;
+
+/**
+ * The grow-then-shrink signature of issue #65: a rich-text editor DISPLAYS
+ * pasted text — so the immediate snapshot shows it and the agent believes the
+ * paste landed — and then drops it, never committing it to its own model. The
+ * text was never saved, and the agent that trusted that first read lost it.
+ *
+ * Three text lengths taken around the paste: `before`, `peak` shortly after,
+ * `settled` a beat later, each null when it could not be measured. Every
+ * ambiguous case answers false. The note this gates tells the agent its content
+ * is GONE, so it may only fire on a clear grow-then-shrink; a paste that merely
+ * looks like it shrank must read as unverified, never as lost.
+ */
+export function pastedTextVanished(before, peak, settled) {
+  for (const length of [before, peak, settled]) {
+    if (typeof length !== "number" || !Number.isFinite(length) || length < 0) return false;
+  }
+  if (peak - before < PASTE_GROWTH_MIN) return false;
+  return settled - before <= PASTE_VANISH_EPSILON;
+}
+
+/**
  * Cap for a printed link href. A printed URL is meant to be OPENED — handed to
  * a read-only fetch, compared against another result — and 150 chopped the tail
  * off ordinary real-world links (a search query with its tracking parameters, a

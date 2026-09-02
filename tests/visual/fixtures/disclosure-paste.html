@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>disclosure + paste facts (issues #64 / #65)</title>
+  </head>
+  <body>
+    <!--
+      Vanilla, self-contained emulation of the two field cases, no AUI/jQuery:
+      the bridge's behaviour is pinned against the CONTRACT the real components
+      expose, exactly as fixtures/controlled-input.html does for the clear ladder.
+    -->
+
+    <!-- #64 positive: a disclosure trigger that TOGGLES aria-expanded on click,
+         mirroring AUI dropdown2 (which carries aria-expanded on the DOM even
+         though it shows no expanded state in the AX tree). -->
+    <a id="trigger-ok" href="#" aria-haspopup="true" aria-expanded="false" aria-controls="menu-ok">Insert</a>
+    <div id="menu-ok" role="menu" hidden><a role="menuitem" href="#">Item</a></div>
+
+    <!-- #64 negative control: identical ARIA, but its handler consumes the click
+         and never opens — the "click was dropped / did nothing" shape. -->
+    <a id="trigger-dead" href="#" aria-haspopup="true" aria-expanded="false" aria-controls="menu-dead">Insert (broken)</a>
+    <div id="menu-dead" role="menu" hidden></div>
+
+    <!-- #65: a source-style textarea that KEEPS a pasted value. -->
+    <textarea id="editor-keep" rows="3" cols="40"></textarea>
+    <!-- #65: one that DISPLAYS a paste then drops it without committing it —
+         the "fake success" an agent trusting the immediate snapshot loses. -->
+    <textarea id="editor-drop" rows="3" cols="40"></textarea>
+
+    <script>
+      const PASTED = "x".repeat(40);
+
+      const ok = document.getElementById("trigger-ok");
+      const menuOk = document.getElementById("menu-ok");
+      ok.addEventListener("click", (e) => {
+        e.preventDefault();
+        const open = ok.getAttribute("aria-expanded") === "true";
+        ok.setAttribute("aria-expanded", open ? "false" : "true");
+        menuOk.hidden = open;
+      });
+
+      // Negative control: swallow the click, never flip the state.
+      document.getElementById("trigger-dead").addEventListener("click", (e) => {
+        e.preventDefault();
+      });
+
+      // A paste shortcut (Ctrl/Cmd+V) fills the field. "keep" holds it; "drop"
+      // shows it then clears it after 300 ms — between the bridge's peak read
+      // (150 ms) and its settle read (700 ms), so peak sees it and settle does not.
+      function onPasteKey(el, drop) {
+        el.addEventListener("keydown", (e) => {
+          if (e.key.toLowerCase() === "v" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            el.value = PASTED;
+            if (drop) setTimeout(() => { el.value = ""; }, 300);
+          }
+        });
+      }
+      onPasteKey(document.getElementById("editor-keep"), false);
+      onPasteKey(document.getElementById("editor-drop"), true);
+    </script>
+  </body>
+</html>

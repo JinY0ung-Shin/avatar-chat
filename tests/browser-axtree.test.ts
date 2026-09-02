@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // Kept on ONE line: @ts-expect-error only covers the line after it, and the
 // error is raised on the module specifier — the LAST line of a wrapped import.
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, groupClickableItems, ariaSortByBackendId, axValueAnswer, clearFailed, sliderPlan } from "../extension/axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, groupClickableItems, ariaSortByBackendId, axValueAnswer, clearFailed, sliderPlan, ariaExpandedOf, isDisclosureTrigger, disclosureClickOutcome, pastedTextVanished } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -3299,5 +3299,84 @@ describe("collapsed combobox option folding (round 13)", () => {
     const lines = renderAxText(versionPicker(18), 5) as string[];
     expect(lines).toContain("v3");
     expect(lines.join("\n")).not.toContain("collapsed dropdown");
+  });
+});
+
+// Issue #64 (disclosure-trigger click verification) and #65 (paste appeared-
+// then-vanished) both hinge on these pure readings; background.js wires them to
+// DOM.describeNode reads and the note channel, but the DECISIONS live here.
+describe("aria disclosure + paste-vanish helpers (issues #64 / #65)", () => {
+  describe("ariaExpandedOf — three-way, never guesses", () => {
+    it("reads true / false from the attribute, case-insensitively", () => {
+      expect(ariaExpandedOf({ "aria-expanded": "true" })).toBe(true);
+      expect(ariaExpandedOf({ "aria-expanded": "false" })).toBe(false);
+      expect(ariaExpandedOf({ "aria-expanded": "TRUE" })).toBe(true);
+      expect(ariaExpandedOf({ "aria-expanded": " false " })).toBe(false);
+    });
+    it("is null when unreadable — missing, garbage, or no attrs at all", () => {
+      expect(ariaExpandedOf({})).toBe(null);
+      expect(ariaExpandedOf({ "aria-expanded": "sometimes" })).toBe(null);
+      expect(ariaExpandedOf({ "aria-expanded": null })).toBe(null);
+      expect(ariaExpandedOf(null)).toBe(null);
+      expect(ariaExpandedOf(undefined)).toBe(null);
+    });
+  });
+
+  describe("isDisclosureTrigger — any one ARIA popup marker counts", () => {
+    it("true for aria-expanded, aria-haspopup (not 'false'), or a non-empty aria-controls", () => {
+      expect(isDisclosureTrigger({ "aria-expanded": "false" })).toBe(true);
+      expect(isDisclosureTrigger({ "aria-haspopup": "true" })).toBe(true);
+      expect(isDisclosureTrigger({ "aria-haspopup": "menu" })).toBe(true);
+      expect(isDisclosureTrigger({ "aria-controls": "insert-menu" })).toBe(true);
+    });
+    it("false when nothing advertises a popup", () => {
+      expect(isDisclosureTrigger({})).toBe(false);
+      expect(isDisclosureTrigger({ "aria-haspopup": "false" })).toBe(false);
+      expect(isDisclosureTrigger({ "aria-controls": "" })).toBe(false);
+      expect(isDisclosureTrigger({ role: "button" })).toBe(false);
+      expect(isDisclosureTrigger(null)).toBe(false);
+    });
+  });
+
+  describe("disclosureClickOutcome — four states, two of them silent", () => {
+    it("opened whenever it is open AFTER, regardless of before", () => {
+      expect(disclosureClickOutcome(null, true)).toBe("opened");
+      expect(disclosureClickOutcome(false, true)).toBe("opened");
+      expect(disclosureClickOutcome(true, true)).toBe("opened");
+    });
+    it("toggled-closed when an open menu is now shut", () => {
+      expect(disclosureClickOutcome(true, false)).toBe("toggled-closed");
+      expect(disclosureClickOutcome(true, null)).toBe("toggled-closed");
+    });
+    it("not-opened when a readable state stayed shut", () => {
+      expect(disclosureClickOutcome(false, false)).toBe("not-opened");
+      expect(disclosureClickOutcome(null, false)).toBe("not-opened");
+    });
+    it("unknown only when neither side reported a state — never guessed broken", () => {
+      expect(disclosureClickOutcome(null, null)).toBe("unknown");
+    });
+  });
+
+  describe("pastedTextVanished — only a clear grow-then-shrink", () => {
+    it("true when it grew past the floor then settled back within epsilon", () => {
+      expect(pastedTextVanished(10, 40, 11)).toBe(true);
+      expect(pastedTextVanished(10, 40, 12)).toBe(true); // exactly the epsilon
+      expect(pastedTextVanished(0, 1200, 0)).toBe(true);
+    });
+    it("false when the paste stuck — grew and stayed", () => {
+      expect(pastedTextVanished(10, 40, 40)).toBe(false);
+      expect(pastedTextVanished(10, 40, 13)).toBe(false); // one past the epsilon
+    });
+    it("false for a sub-threshold wobble (the page's own reformatting)", () => {
+      expect(pastedTextVanished(10, 12, 10)).toBe(false); // grew only 2 (< 4)
+      expect(pastedTextVanished(10, 10, 10)).toBe(false);
+    });
+    it("false whenever any reading was unmeasurable or nonsense", () => {
+      expect(pastedTextVanished(null, 40, 10)).toBe(false);
+      expect(pastedTextVanished(10, null, 10)).toBe(false);
+      expect(pastedTextVanished(10, 40, null)).toBe(false);
+      expect(pastedTextVanished(NaN, 40, 10)).toBe(false);
+      expect(pastedTextVanished(-1, 40, 10)).toBe(false);
+    });
   });
 });
