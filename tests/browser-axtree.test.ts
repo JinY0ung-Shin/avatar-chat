@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // Kept on ONE line: @ts-expect-error only covers the line after it, and the
 // error is raised on the module specifier — the LAST line of a wrapped import.
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, groupClickableItems, ariaSortByBackendId, axValueAnswer, clearFailed, sliderPlan, ariaExpandedOf, isDisclosureTrigger, disclosureClickOutcome, pastedTextVanished } from "../extension/axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, groupClickableItems, ariaSortByBackendId, axValueAnswer, clearFailed, sliderPlan, ariaExpandedOf, isDisclosureTrigger, disclosureClickOutcome, pastedTextVanished, visionTokens, visionFits, visionFitSize, viewportShotScale, jpegDimensions, base64ToBytes, screenshotImageNote, pixelPointNote, pixelDragNote, VISION_STANDARD_MAX_EDGE, VISION_STANDARD_MAX_TOKENS } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -3377,6 +3377,388 @@ describe("aria disclosure + paste-vanish helpers (issues #64 / #65)", () => {
       expect(pastedTextVanished(10, 40, null)).toBe(false);
       expect(pastedTextVanished(NaN, 40, 10)).toBe(false);
       expect(pastedTextVanished(-1, 40, 10)).toBe(false);
+    });
+  });
+});
+
+/**
+ * A minimal but REAL JPEG marker stream: SOI, the given segments in order, then
+ * SOS + EOI. Built by hand rather than encoded, because the point of the parser
+ * is that it walks the segment chain instead of trusting a fixed offset — an
+ * encoder's output would only ever exercise ONE layout.
+ */
+function jpegBytes(segments: { marker: number; payload: number[] }[]): Uint8Array {
+  const out: number[] = [0xff, 0xd8];
+  for (const { marker, payload } of segments) {
+    const length = payload.length + 2; // the length field counts itself
+    out.push(0xff, marker, (length >> 8) & 0xff, length & 0xff, ...payload);
+  }
+  out.push(0xff, 0xda, 0x00, 0x02); // SOS — entropy-coded data would follow
+  out.push(0xff, 0xd9); // EOI
+  return new Uint8Array(out);
+}
+
+/** A frame-header payload: precision, HEIGHT, WIDTH, one component. */
+function framePayload(width: number, height: number): number[] {
+  return [
+    8,
+    (height >> 8) & 0xff,
+    height & 0xff,
+    (width >> 8) & 0xff,
+    width & 0xff,
+    1,
+    0x01,
+    0x11,
+    0x00,
+  ];
+}
+
+/** The 1400×2197 portrait capture from the field report in issue #66. */
+const FIELD_SHOT = { width: 1400, height: 2197 };
+
+describe("vision-image fit math (issue #66)", () => {
+  describe("visionTokens — one token per 28×28 patch", () => {
+    it("counts partial patches as whole ones, on both axes", () => {
+      expect(visionTokens(28, 28)).toBe(1);
+      expect(visionTokens(29, 28)).toBe(2);
+      expect(visionTokens(28, 29)).toBe(2);
+      expect(visionTokens(1, 1)).toBe(1);
+    });
+    it("reproduces the field capture's cost — the number that broke #66", () => {
+      // 50 × 79 patches: more than double the standard tier's 1568-token budget,
+      // so the API resized it and the model answered in the resized space.
+      expect(visionTokens(FIELD_SHOT.width, FIELD_SHOT.height)).toBe(3950);
+    });
+  });
+
+  describe("visionFits — the standard tier's TWO independent bounds", () => {
+    it("passes a typical 1920×1080 viewport capture, which is why it is untouched", () => {
+      expect(visionFits(1400, 788)).toBe(true);
+      expect(visionTokens(1400, 788)).toBe(1450);
+    });
+    it("fails the field capture on TOKENS while both edges are legal", () => {
+      // Neither edge exceeds 1568 — 1400 and 2197… the height does. Pin both
+      // halves so a future edit cannot pass one bound and call it fitting.
+      expect(FIELD_SHOT.width).toBeLessThan(VISION_STANDARD_MAX_EDGE);
+      expect(visionFits(FIELD_SHOT.width, FIELD_SHOT.height)).toBe(false);
+      expect(visionFits(1400, 1300)).toBe(false); // both edges legal, 2450 tokens
+      expect(visionTokens(1400, 1300)).toBeGreaterThan(VISION_STANDARD_MAX_TOKENS);
+    });
+    it("measures each edge PADDED to the next whole patch", () => {
+      // 1568 = 56 patches exactly; 1569 pads to 1596 and is over the edge cap
+      // even though the token count (57 × 1) is tiny.
+      expect(visionFits(1568, 28)).toBe(true);
+      expect(visionFits(1569, 28)).toBe(false);
+      expect(visionFits(28, 1569)).toBe(false);
+    });
+    it("takes overridden limits, which is how a tier-aware caller would pass the high-res tier", () => {
+      expect(visionFits(2576, 28, { maxEdge: 2576, maxTokens: 4784 })).toBe(true);
+      expect(visionFits(2576, 28)).toBe(false);
+    });
+  });
+
+  describe("visionFitSize — the API's own resize, ported", () => {
+    it("reproduces the reference table from the vision docs", () => {
+      // The doc's worked example, and the one that pins round-half-to-even on
+      // the short edge: a plain Math.round answers 1308, not 1307.
+      expect(visionFitSize(1075, 1520)).toEqual([924, 1307]);
+      expect(visionFitSize(1920, 1080)).toEqual([1456, 819]);
+    });
+    it("leaves an image that already fits exactly as it is — the API never upscales", () => {
+      expect(visionFitSize(1000, 1000)).toEqual([1000, 1000]);
+      expect(visionFitSize(1092, 1092)).toEqual([1092, 1092]);
+      expect(visionFitSize(200, 200)).toEqual([200, 200]);
+    });
+    it("answers the field capture with the size the model actually saw", () => {
+      // 874×1372 — the ×1.60 the field report measured is 1400/874.
+      expect(visionFitSize(FIELD_SHOT.width, FIELD_SHOT.height)).toEqual([874, 1372]);
+      expect(FIELD_SHOT.width / 874).toBeCloseTo(1.602, 3);
+    });
+    it("is symmetric under rotation — portrait recurses through the landscape search", () => {
+      const [w, h] = visionFitSize(1075, 1520);
+      expect(visionFitSize(1520, 1075)).toEqual([h, w]);
+    });
+    it("always returns something that FITS, across a spread of shapes", () => {
+      for (const [w, h] of [
+        [4000, 3000],
+        [3840, 2160],
+        [1400, 2197],
+        [800, 6000],
+        [6000, 800],
+        [2000, 2000],
+        [1569, 1569],
+      ]) {
+        const [fw, fh] = visionFitSize(w, h);
+        expect(visionFits(fw, fh), `${w}×${h} → ${fw}×${fh}`).toBe(true);
+        expect(fw).toBeLessThanOrEqual(w);
+        expect(fh).toBeLessThanOrEqual(h);
+      }
+    });
+  });
+
+  describe("viewportShotScale — the capture scale a viewport shot asks for", () => {
+    const CAPS = { maxWidth: 1400, maxHeight: 7900 };
+    /** The bitmap a scale produces, rounded exactly as captureShot's output is. */
+    const bitmap = (pw: number, ph: number, scale: number) => [
+      Math.max(1, Math.round(pw * scale)),
+      Math.max(1, Math.round(ph * scale)),
+    ];
+    /** The PRE-#66 scale: the two physical caps and nothing else. */
+    const preFix = (pw: number, ph: number) => Math.min(1, 1400 / pw, 7900 / ph);
+
+    it("leaves a small viewport alone — no cap and no fit bind", () => {
+      expect(viewportShotScale(1280, 720, CAPS)).toBe(1);
+    });
+    it("still applies the width cap, unchanged, when that is the binding bound", () => {
+      const scale = viewportShotScale(3200, 1800, CAPS);
+      expect(scale).toBeCloseTo(preFix(3200, 1800), 10);
+      expect(bitmap(3200, 1800, scale)).toEqual([1400, 788]);
+    });
+    it("shrinks the field capture until it fits — where the pre-fix scale did NOT", () => {
+      const scale = viewportShotScale(FIELD_SHOT.width, FIELD_SHOT.height, CAPS);
+      const [w, h] = bitmap(FIELD_SHOT.width, FIELD_SHOT.height, scale);
+      expect([w, h]).toEqual([874, 1372]);
+      expect(visionFits(w, h)).toBe(true);
+      // The negative control, in the same numbers: the caps alone allowed the
+      // capture the API then resized behind the bridge's back.
+      const [ow, oh] = bitmap(FIELD_SHOT.width, FIELD_SHOT.height, preFix(FIELD_SHOT.width, FIELD_SHOT.height));
+      expect([ow, oh]).toEqual([1400, 2197]);
+      expect(visionFits(ow, oh)).toBe(false);
+    });
+    it("fits the field shape as it arrives on a SCALED display (physical px, not CSS)", () => {
+      // 1152×1808 CSS at dsf 1.25 — the portrait laptop shape from the report.
+      const scale = viewportShotScale(1440, 2260, CAPS);
+      const [w, h] = bitmap(1440, 2260, scale);
+      expect(visionFits(w, h)).toBe(true);
+      expect([w, h]).toEqual([874, 1372]);
+    });
+    it("never exceeds 1, never reaches 0, and always lands on a fitting bitmap", () => {
+      for (const [pw, ph] of [
+        [1280, 720],
+        [1920, 1080],
+        [1400, 2197],
+        [1440, 2260],
+        [2560, 1440],
+        [3840, 2160],
+        [800, 9000],
+        [1, 1],
+        [7000, 300],
+      ]) {
+        const scale = viewportShotScale(pw, ph, CAPS);
+        expect(scale, `${pw}×${ph}`).toBeGreaterThan(0);
+        expect(scale, `${pw}×${ph}`).toBeLessThanOrEqual(1);
+        const [w, h] = bitmap(pw, ph, scale);
+        expect(visionFits(w, h), `${pw}×${ph} → ${w}×${h}`).toBe(true);
+        expect(w, `${pw}×${ph} width cap`).toBeLessThanOrEqual(1400);
+      }
+    });
+    it("honours the caps it is handed — background.js owns those numbers", () => {
+      const scale = viewportShotScale(2000, 1000, { maxWidth: 500, maxHeight: 7900 });
+      expect(bitmap(2000, 1000, scale)).toEqual([500, 250]);
+    });
+    it("treats garbage dimensions as 1px rather than dividing by zero", () => {
+      expect(viewportShotScale(0, 0, CAPS)).toBe(1);
+      expect(viewportShotScale(NaN, NaN, CAPS)).toBe(1);
+    });
+  });
+
+  describe("jpegDimensions — the size the BYTES declare", () => {
+    it("reads a baseline SOF0 frame, height field before width", () => {
+      const bytes = jpegBytes([{ marker: 0xc0, payload: framePayload(1400, 2197) }]);
+      expect(jpegDimensions(bytes)).toEqual({ width: 1400, height: 2197 });
+    });
+    it("reads a PROGRESSIVE SOF2 frame with no special case", () => {
+      const bytes = jpegBytes([{ marker: 0xc2, payload: framePayload(874, 1372) }]);
+      expect(jpegDimensions(bytes)).toEqual({ width: 874, height: 1372 });
+    });
+    it("walks PAST the segments a real encoder puts in front of the frame", () => {
+      const bytes = jpegBytes([
+        { marker: 0xe0, payload: [0x4a, 0x46, 0x49, 0x46, 0x00, 1, 1, 0, 0, 1, 0, 1, 0, 0] }, // APP0/JFIF
+        { marker: 0xe1, payload: new Array(400).fill(0x20) }, // a fat EXIF block
+        { marker: 0xc4, payload: [0x00, 0x01, 0x02] }, // DHT — shares the 0xC0-0xCF range, not a frame
+        { marker: 0xdb, payload: new Array(65).fill(0x10) }, // DQT
+        { marker: 0xc1, payload: framePayload(1280, 720) }, // SOF1
+      ]);
+      expect(jpegDimensions(bytes)).toEqual({ width: 1280, height: 720 });
+    });
+    it("tolerates 0xFF fill bytes before a marker", () => {
+      const frame = jpegBytes([{ marker: 0xc0, payload: framePayload(640, 480) }]);
+      const padded = new Uint8Array([...frame.slice(0, 2), 0xff, 0xff, ...frame.slice(2)]);
+      expect(jpegDimensions(padded)).toEqual({ width: 640, height: 480 });
+    });
+    it("returns null rather than a guess for anything it cannot vouch for", () => {
+      // PNG, not JPEG.
+      expect(jpegDimensions(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBeNull();
+      // Truncated inside the frame header.
+      const whole = jpegBytes([{ marker: 0xc0, payload: framePayload(1400, 2197) }]);
+      expect(jpegDimensions(whole.slice(0, 8))).toBeNull();
+      // Scan data starts before any frame was declared.
+      expect(jpegDimensions(jpegBytes([]))).toBeNull();
+      // A segment length that cannot be right (it must count itself).
+      expect(jpegDimensions(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x00, 0x00]))).toBeNull();
+      // A frame declaring a zero edge is not a measurement.
+      expect(jpegDimensions(jpegBytes([{ marker: 0xc0, payload: framePayload(0, 100) }]))).toBeNull();
+      // Junk where a marker must be.
+      expect(jpegDimensions(new Uint8Array([0xff, 0xd8, 0x12, 0x34, 0x56, 0x78]))).toBeNull();
+      expect(jpegDimensions(null)).toBeNull();
+      expect(jpegDimensions(new Uint8Array([]))).toBeNull();
+    });
+  });
+
+  describe("base64ToBytes — decoding only as much as measuring needs", () => {
+    const sample = jpegBytes([
+      { marker: 0xe1, payload: new Array(300).fill(0x41) },
+      { marker: 0xc0, payload: framePayload(1400, 2197) },
+    ]);
+    const base64 = Buffer.from(sample).toString("base64");
+
+    it("round-trips a whole capture", () => {
+      expect(Array.from(base64ToBytes(base64) as Uint8Array)).toEqual(Array.from(sample));
+    });
+    it("decodes a PREFIX that still contains the frame — the cheap path captureShot takes", () => {
+      const head = base64ToBytes(base64, 64 * 1024) as Uint8Array;
+      expect(jpegDimensions(head)).toEqual({ width: 1400, height: 2197 });
+    });
+    it("keeps the slice base64-ALIGNED, so atob never rejects it", () => {
+      // 100 bytes asked for → 132 chars (33 whole groups) → 99 bytes decoded.
+      const head = base64ToBytes(base64, 100) as Uint8Array;
+      expect(head.length).toBe(99);
+      expect(Array.from(head)).toEqual(Array.from(sample.slice(0, 99)));
+    });
+    it("survives a wrapped string, because the alignment math needs clean input", () => {
+      const wrapped = (base64.match(/.{1,76}/g) as string[]).join("\n");
+      expect(Array.from(base64ToBytes(wrapped) as Uint8Array)).toEqual(Array.from(sample));
+    });
+    it("answers null for anything that is not base64 at all", () => {
+      expect(base64ToBytes("")).toBeNull();
+      expect(base64ToBytes(null)).toBeNull();
+      expect(base64ToBytes("!!! not base64 !!!")).toBeNull();
+    });
+  });
+});
+
+describe("screenshot / pixel-mode bridge notes (issue #66)", () => {
+  describe("screenshotImageNote — what size image this IS", () => {
+    it("states the viewport image's size, its CSS twin, and the factor between them", () => {
+      expect(
+        screenshotImageNote({
+          mode: "viewport",
+          imageWidth: 1400,
+          imageHeight: 788,
+          cssWidth: 1400,
+          cssHeight: 788,
+          zoom: 1,
+          dsf: 1,
+        }),
+      ).toBe(
+        "Image: 1400×788 px = the visible viewport (1400×788 CSS px), 1.000 image px per CSS px. " +
+          "click_at/drag pixel coordinates are positions on THIS image (x 0–1399, y 0–787).",
+      );
+    });
+    it("names zoom and display scale ONLY when they are not 1 — otherwise they are noise", () => {
+      const scaled = screenshotImageNote({
+        mode: "viewport",
+        imageWidth: 874,
+        imageHeight: 1372,
+        cssWidth: 1152,
+        cssHeight: 1808,
+        zoom: 1,
+        dsf: 1.25,
+      });
+      expect(scaled).toContain("(browser zoom 100%, display scale 1.25×)");
+      expect(scaled).toContain("0.759 image px per CSS px");
+      const zoomed = screenshotImageNote({
+        mode: "viewport",
+        imageWidth: 1400,
+        imageHeight: 788,
+        cssWidth: 1120,
+        cssHeight: 630,
+        zoom: 1.25,
+        dsf: 1,
+      });
+      expect(zoomed).toContain("(browser zoom 125%, display scale 1.00×)");
+      // A hair off 1 is rounding in the metrics, not a fact worth reporting.
+      expect(
+        screenshotImageNote({
+          mode: "viewport",
+          imageWidth: 1400,
+          imageHeight: 788,
+          cssWidth: 1400,
+          cssHeight: 788,
+          zoom: 1.002,
+          dsf: 0.999,
+        }),
+      ).not.toContain("browser zoom");
+    });
+    it("sends an ELEMENT capture to uid mode instead of pixel coordinates", () => {
+      expect(screenshotImageNote({ mode: "element", imageWidth: 550, imageHeight: 400 })).toBe(
+        "Image: 550×400 px, one element only — aim inside it with click_at/drag uid mode " +
+          "(xFraction/yFraction), not pixel coordinates.",
+      );
+    });
+    it("says a fullPage capture cannot be measured on at all", () => {
+      expect(screenshotImageNote({ mode: "fullPage", imageWidth: 1400, imageHeight: 6000 })).toBe(
+        "Image: 1400×6000 px, full page — pixel coordinates cannot be measured on it; take a plain " +
+          "viewport screenshot for click_at/drag.",
+      );
+    });
+    it("stays inside the extension's 480-char note budget even merged with the beyondViewport caveat", () => {
+      // The one place two notes share the budget: an oversized element capture.
+      const beyond =
+        "This element extends beyond the visible viewport, so it was captured with the page surface " +
+        "expanded. A responsive layout can render at sizes and positions the screen does not show in " +
+        "such a capture — do not measure click_at/drag coordinates or fractions on it; scroll the " +
+        "element fully into view and re-capture, or use a plain viewport screenshot.";
+      const merged = [
+        beyond,
+        screenshotImageNote({ mode: "element", imageWidth: 1400, imageHeight: 6000 }),
+      ].join(" ");
+      expect(merged.length).toBeLessThanOrEqual(480);
+    });
+  });
+
+  describe("pixelPointNote — the mapping a click actually used", () => {
+    const note = pixelPointNote({
+      x: 700,
+      y: 1919,
+      cssX: 922.6,
+      cssY: 2528.4,
+      imageWidth: 874,
+      imageHeight: 1372,
+      cssWidth: 1152,
+      cssHeight: 1808,
+    });
+    it("prints image pixel → viewport CSS point, both spaces named", () => {
+      expect(note).toContain("Pixel (700, 1919) on the 874×1372 px screenshot");
+      expect(note).toContain("viewport point (923, 2528) of 1152×1808 CSS px");
+    });
+    it("carries the diagnosis rule, not just the numbers — a wrong SPACE looks like a wrong aim", () => {
+      expect(note).toContain("If the element below is not your target, the coordinate space is off");
+      expect(note).toContain("correct once, or use uid mode");
+    });
+    it("fits the note budget with room for the tab notice that may be prepended", () => {
+      expect(note.length).toBeLessThan(300);
+    });
+  });
+
+  describe("pixelDragNote — both ends, because either can be the bad one", () => {
+    it("prints the two pixel points and the two CSS points they map to", () => {
+      expect(
+        pixelDragNote({
+          x: 10,
+          y: 20,
+          toX: 300,
+          toY: 400,
+          cssX: 13.2,
+          cssY: 26.4,
+          toCssX: 395.5,
+          toCssY: 527.3,
+          imageWidth: 874,
+          imageHeight: 1372,
+        }),
+      ).toBe(
+        "Pixels (10, 20)→(300, 400) on the 874×1372 px screenshot → viewport (13, 26)→(396, 527) CSS px.",
+      );
     });
   });
 });

@@ -873,7 +873,12 @@ export function buildSystemPromptAppend(
         (request.visionEnabled !== false
           ? "When pixels matter (charts, maps, images, layout that seems broken), `screenshot` returns an actual image of the viewport, one element (uid), or the full page. " +
             "Every screenshot you take is also shared with the user as a file card in the chat (it opens in the preview panel), so the user sees each capture — refer to it instead of re-describing every detail. " +
-            "You may also click a target you can see but that has no uid by its PIXEL position on a fresh viewport screenshot (`click_at` with `x`/`y`) — CHECK the landed-on element the result reports, and re-screenshot after the page scrolls or changes. "
+            // #66: a pixel-mode miss can be a coordinate-space mismatch rather
+            // than a bad aim, because the model measures on the image it was
+            // SHOWN. So the standing rule is to diagnose from the
+            // two things the result reports (the landed-on element and the
+            // mapping line) and correct ONCE, never to re-send the same numbers.
+            "You may also click a target you can see but that has no uid by its PIXEL position on a fresh viewport screenshot (`click_at` with `x`/`y`) — CHECK the landed-on element AND the mapping line the result reports; when the element is not your target the coordinate space is off (compare where it sits on the screenshot with where you aimed, correct once, or use uid mode), and re-screenshot after the page scrolls or changes. "
           : "") +
         // click_at's uid mode needs no screenshot, so this line is unconditional:
         // on a text-only model it is the ONLY way into a canvas or map surface.

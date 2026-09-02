@@ -95,3 +95,15 @@
   all (actions.md). `maxChars`' floor dropped to 500 on BOTH sides in lockstep (snapshots.md; an old
   build re-clamps to 2000 — a degrade). The AX-invisible clickable grouping is extension-render-only
   (snapshots.md). The chat route's audit skip list grew to snapshot / wait_for / dialog_status.
+- **The 0.26.0 screenshot-geometry fix (issue #66) adds NO wire field either — it rides the `note`
+  channel and the extension's own measurements.** A viewport capture is pre-fitted to the native image
+  size Claude's API resizes it to, and its pixel→CSS mapping is read off the RETURNED bitmap rather than
+  the capture formula (snapshots.md); `screenshot`, `click_at` and `drag` hand the resulting image size
+  and mapping back as ordinary bridge `note`s (addressing.md), which the five layers already relay —
+  `capNote` merges them with the tab notice inside the extension's 480-char budget, `routes/chat.ts`
+  slices `note` to 500, and `browserTools.report()` prints it as the `Note from the browser bridge:`
+  line OUTSIDE the untrusted wrapper. So `BROWSER_EXTENSION_MIN_COMPATIBLE` stays 0.6.0: an older build
+  captures unfitted and returns no notes — a degrade, not a break — and the SERVER covers exactly that
+  case by decoding the image itself and adding an oversize caveat with the correction factor
+  (addressing.md). The composer badge does the rest: at or above the floor but behind the bundle is
+  `compatible`, blue, with an update prompt.

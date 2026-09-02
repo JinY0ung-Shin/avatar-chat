@@ -4010,6 +4010,26 @@ describe("buildPrompt", () => {
     expect(p).toContain("mcp__file_output__show_file");
   });
 
+  it("makes the pixel-click diagnosis rule standing guidance, and only on a vision run (#66)", () => {
+    // A pixel-mode miss is a coordinate-SPACE mismatch, not a bad aim: the
+    // model measures on the image it was SHOWN, which the API may have
+    // downscaled before showing it. So the standing text has to say "read the
+    // mapping line and correct once" — a retry with the same numbers misses
+    // identically, which is exactly what #66 looked like in the field.
+    const withVision = buildPrompt(req({ browserEnabled: true }), 0);
+    expect(withVision).toContain("PIXEL position");
+    expect(withVision).toContain("CHECK the landed-on element AND the mapping line the result reports");
+    expect(withVision).toContain("the coordinate space is off");
+    expect(withVision).toContain("correct once, or use uid mode");
+
+    // A text-only run has no screenshot to measure on, so the whole pixel
+    // branch stays out of its prompt — uid mode is its only route in.
+    const noVision = buildPrompt(req({ browserEnabled: true, visionEnabled: false }), 0);
+    expect(noVision).not.toContain("PIXEL position");
+    expect(noVision).not.toContain("the coordinate space is off");
+    expect(noVision).toContain("`xFraction`/`yFraction`");
+  });
+
   it("injects deck (PPTX) guidance only when the toolchain and file output are both active", () => {
     // File output alone is not enough — the deployment must carry the toolchain.
     expect(buildPrompt(req({ viewerIsOwner: true, fileOutputEnabled: true }), 0)).not.toContain("PowerPoint decks");

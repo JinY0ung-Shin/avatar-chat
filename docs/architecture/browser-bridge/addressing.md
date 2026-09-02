@@ -23,14 +23,19 @@
   snapshot lists them with ordinary uids in its trailing `clickable but not in the accessibility tree`
   section (snapshots.md), which `click`/`click_at`/`hover` resolve like any other uid.
 - **PIXEL mode clicks by SCREENSHOT-PIXEL coordinates, not CSS coordinates.** A capture is bounded to
-  `SCREENSHOT_MAX_WIDTH` 1400 PHYSICAL px, and the browser then applies the user's own browser zoom and
+  `SCREENSHOT_MAX_WIDTH` 1400 PHYSICAL px — and, since #66, additionally pre-fitted to the size Claude's
+  API resizes an image to (snapshots.md) — and the browser then applies the user's own browser zoom and
   the display's device scale factor on top, so the pixels the model sees differ from CSS px by more than
   that downscale. The extension remembers the LAST capture's whole mapping (`lastShot`:
-  tabId/mode/scale/`pxPerCss`/clip dims) and inverts `pxPerCss` — `scale × zoom × dsf`, the single
-  number that turns an image px back into a CSS px — at click time; `clipWidth`/`clipHeight` stay CSS px
-  because the drift check below compares them against fresh `cssVisualViewport` metrics (the geometry
-  contract itself is in snapshots.md). Viewport captures only; element/fullPage clips are page-absolute
-  and refused with a redirect to a plain viewport screenshot. Same lifetime rule as uids: coordinates are only valid for
+  tabId/mode/scale/clip dims plus the MEASURED `imageWidth`/`imageHeight` and per-axis
+  `pxPerCssX`/`pxPerCssY`) and inverts those MEASURED factors at click time — the theoretical
+  `pxPerCss = scale × zoom × dsf` is only the fallback for a bitmap `jpegDimensions` could not parse,
+  since #66's measured ≈×1.145 skew is consistent with a bitmap 7/8 of the size that formula predicted
+  (snapshots.md).
+  `clipWidth`/`clipHeight` stay CSS px because the drift check below compares them against fresh
+  `cssVisualViewport` metrics (the geometry contract itself is in snapshots.md). Viewport captures
+  only; element/fullPage clips are page-absolute and refused with a redirect to a plain viewport
+  screenshot. Same lifetime rule as uids: coordinates are only valid for
   the screenshot that produced them — enforced at CLICK time, not mint time: the branch re-reads
   `Page.getLayoutMetrics` and refuses on URL/scroll/viewport-size drift (a stale image size would even
   pass the bounds check). Before dispatching, the point is hit-tested read-only through `hitNodeAt`
@@ -44,6 +49,27 @@
   landed-on element rides back (`landedOn`, quarantined as page content, capped in the relay). An
   UNIDENTIFIED landing is stated as a warning in the tool result ("could NOT be identified") — absence
   must never read as success, since the landed-on report is the one thing keeping a blind click honest.
+- **A pixel-mode result STATES the coordinate space it used, because a wrong SPACE and a wrong AIM look
+  identical.** Claude answers pixel questions in the space of the image the API resized for it, not in
+  the bytes the bridge produced (snapshots.md), so #66's symptom was a click landing one menu row high
+  behind a landed-on report that read like an ordinary miss. On success the pixel branch appends
+  `pixelPointNote` — `Pixel (x, y) on the W×H px screenshot → viewport point (cssX, cssY) of cssW×cssH
+  CSS px` — followed by the standing rule: if the element below is not the target, the coordinate space
+  is off, so compare where that element sits on the screenshot with where you aimed, correct ONCE, or
+  switch to uid mode. `drag` appends the two-ended `pixelDragNote`. Both ride the existing `note`
+  channel (no new wire field), and the SAME rule is written into the `click_at`/`drag`/`screenshot` tool
+  descriptions and the promptBuilder browser paragraph — a note read once is not guidance; the diagnosis
+  has to be standing per-turn text WITH an in-result mapping to check it against. UID-mode branches are
+  untouched: a fraction of an element's own box has no image space to be wrong about.
+- **An extension older than 0.26.0 pre-fits nothing, so the SERVER states the caveat instead.**
+  `browserTools.ts`'s screenshot handler decodes the returned image with the server's own TypeScript
+  port of the vision math (`agent/visionImage.ts` — `jpegDimensions`, `visionFits`, `visionFitSize`) and,
+  for a VIEWPORT capture whose bitmap does NOT fit the standard tier, appends a bridge-authored caveat
+  OUTSIDE the untrusted wrapper: the real W×H, the size a standard-resolution model sees natively, and
+  the factor to multiply a consistently-missing pixel click by — once, then re-check the landed-on
+  element. A capture that already fits adds nothing (so a current extension never triggers it), `uid`
+  and `fullPage` captures are skipped, and every step is guarded: an image that will not decode adds no
+  caveat and never fails the tool call.
 - **A uid is STABLE for the life of the worker, not for one snapshot.** `refMap` (uid → ref) plus the
   reverse `uidByNode` (`${tabId}:${sessionId||"root"}:${backendNodeId}` → uid) are never reset per
   snapshot: `mintUid` returns the uid an element already has, so re-snapshotting a page that re-orders

@@ -8,6 +8,7 @@ import type {
   BrowserTab,
 } from "./events.js";
 import { text } from "./mcpTools.js";
+import { jpegDimensions, visionFitSize, visionFits } from "./visionImage.js";
 
 /** MCP server name; tools surface to the model as `mcp__browser__<tool>`. */
 export const BROWSER_SERVER_NAME = "browser";
@@ -208,8 +209,55 @@ type BrowserToolResult = {
   isError?: boolean;
 };
 
-/** Render a bridge outcome as model-facing text; errors redirect to a next step. */
-function report(result: BrowserResult, okNote: string): BrowserToolResult {
+/**
+ * The SERVER half of the #66 fix: warn when a viewport capture reaches the model
+ * BIGGER than the model can natively see.
+ *
+ * Claude answers a pixel question in the space of the image it SEES, and the API
+ * downscales anything past the resolution tier's ceilings before the model gets
+ * it — so an oversize capture makes every pixel-mode coordinate wrong by one
+ * constant factor, silently and consistently. Extension builds from 0.26.0 fit
+ * the capture themselves; this fires only for OLDER installs, which cannot be
+ * force-upgraded (BROWSER_EXTENSION_MIN_COMPATIBLE stays put deliberately —
+ * raising it orders every user to reinstall). For those, naming the factor out
+ * loud is the difference between a fixable miss and a blind retry.
+ *
+ * Measured from the BYTES, never from the bridge's own scale arithmetic — the
+ * wrong half of the field failure was exactly that prediction — and against the
+ * STANDARD tier, because the serving model's tier is not knowable here (see
+ * visionImage.ts). Anything unparseable yields NO caveat: a warning about a
+ * capture we could not measure is worse than silence, and none of this may ever
+ * fail a screenshot that otherwise worked.
+ */
+function oversizeCaptureCaveat(result: BrowserResult): string | undefined {
+  if (result.behavior !== "ok" || !result.image) return undefined;
+  let size: { width: number; height: number } | null = null;
+  try {
+    size = jpegDimensions(Buffer.from(result.image.base64, "base64"));
+  } catch {
+    return undefined;
+  }
+  // Unreadable bytes (or a capture already at native size): nothing honest to add.
+  if (!size || visionFits(size.width, size.height)) return undefined;
+  const [nativeWidth, nativeHeight] = visionFitSize(size.width, size.height);
+  const factor = (size.width / nativeWidth).toFixed(2);
+  return (
+    `This capture is ${size.width}×${size.height} px — larger than the ${nativeWidth}×${nativeHeight} px ` +
+    "a standard-resolution model sees natively, so such a model receives it downscaled and pixel " +
+    `coordinates measured on it land off-target by a constant factor (×${factor}). Prefer click_at's ` +
+    "uid mode on this page; if a pixel click misses by a consistent factor, multiply your coordinates " +
+    `by ${factor} once and re-check the landed-on element.`
+  );
+}
+
+/**
+ * Render a bridge outcome as model-facing text; errors redirect to a next step.
+ *
+ * `serverNote` is a caveat the SERVER derived from this outcome, as opposed to
+ * `result.note`, which the extension authored. Both are OURS rather than page
+ * content, so they render side by side outside the untrusted wrapper.
+ */
+function report(result: BrowserResult, okNote: string, serverNote?: string): BrowserToolResult {
   if (result.behavior === "error") {
     return text(result.message, true);
   }
@@ -283,6 +331,11 @@ function report(result: BrowserResult, okNote: string): BrowserToolResult {
           : result.note
       }`
     : "";
+  // Our own side of the same channel: a caveat the server worked out from the
+  // result (today, a screenshot too big for the model's native vision size). It
+  // sits beside the bridge note because both answer "why might this result
+  // mislead you", and outside the wrapper because neither is page-authored.
+  const serverCaveat = serverNote ? `\n\n${serverNote}` : "";
   // The action ran; only the read-back failed. This note is BRIDGE-authored,
   // not page content, so it stays OUTSIDE the untrusted wrapper — and it has to
   // be explicit that retrying the action would perform it a second time.
@@ -291,7 +344,7 @@ function report(result: BrowserResult, okNote: string): BrowserToolResult {
       "The page may still have changed — verify with mcp__browser__read_text or a fresh mcp__browser__snapshot " +
       "instead of retrying the action."
     : "";
-  const message = `${okNote}${where}${share}${dialog}${bridgeNote}${snapshotFailed}${body}`;
+  const message = `${okNote}${where}${share}${dialog}${bridgeNote}${serverCaveat}${snapshotFailed}${body}`;
   // A screenshot rides as a real image block. Pixels are page-authored too:
   // rendered text can carry injected instructions exactly like snapshot text,
   // so the caption restates the warning the wrapper gives textual content.
@@ -623,6 +676,9 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "(very tall pages are cut off). Each capture is ALSO shared with the user as a file card in the " +
         "chat (it opens in the preview panel), so they can see exactly what you saw — do not re-send it or " +
         "exhaustively re-describe it for their benefit. " +
+        "The result's bridge note states the image's pixel size (W×H) and, for a viewport capture, how it " +
+        "maps onto the viewport — click_at/drag pixel coordinates are positions on that image, so measure " +
+        "them against those dimensions. " +
         "Unavailable when this conversation's model cannot receive images.",
       {
         uid: z
@@ -650,13 +706,20 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         if (args.uid && args.fullPage) {
           return text("Pass either `uid` or `fullPage`, not both.", true);
         }
+        // Only a VIEWPORT capture defines a coordinate space worth warning
+        // about: a uid capture is addressed by scale-invariant fractions, and
+        // pixel mode refuses a fullPage image outright, so neither can mislead
+        // a click however big it is.
+        const viewportCapture = !args.uid && !args.fullPage;
+        const result = await ctx.execute({
+          op: "screenshot",
+          uid: args.uid || undefined,
+          fullPage: args.fullPage || undefined,
+        });
         return report(
-          await ctx.execute({
-            op: "screenshot",
-            uid: args.uid || undefined,
-            fullPage: args.fullPage || undefined,
-          }),
+          result,
           "Screenshot of the user's browser tab.",
+          viewportCapture ? oversizeCaptureCaveat(result) : undefined,
         );
       },
     ),
@@ -727,8 +790,12 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "e.g. xFraction 0.25 with yFraction 0.75 clicks its lower-left quadrant. Works regardless of whether " +
         "this conversation's model can see images.\n" +
         "2. pixel mode: give `x`/`y` measured on the most recent viewport `screenshot` (taken with no uid " +
-        "and no fullPage), then CHECK the reported landed-on element actually is what you aimed at. If the " +
-        "page scrolled or changed since that capture the coordinates are stale — re-screenshot first. " +
+        "and no fullPage), then CHECK BOTH the reported landed-on element and the mapping line (image pixel " +
+        "→ viewport CSS point). If the element is not what you aimed at, do NOT retry the same numbers: work " +
+        "out the offset or scale between where that element sits on the screenshot and where you aimed, " +
+        "re-aim ONCE with corrected coordinates, or switch to uid mode (an enclosing element's uid + " +
+        "xFraction/yFraction) / take a fresh screenshot. If the page scrolled or changed since that " +
+        "capture the coordinates are stale — re-screenshot first. " +
         "Unavailable when this conversation's model cannot receive images.\n" +
         "Either way, the click is BLIND: confirm the effect you intended in the snapshot the call returns. " +
         "A consequential click (submitting, deleting, paying, sending) may require the user's explicit " +
@@ -843,7 +910,9 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "`toUid` drags INSIDE the start element — e.g. a canvas from (0.2, 0.2) to (0.6, 0.6) — so give at " +
         "least one to-fraction then. Both elements must sit in the SAME frame and both ends must fit on " +
         "screen at once; the call is refused otherwise.\n" +
-        "2. pixel mode: all four of `x`/`y` → `toX`/`toY`, measured on the most recent viewport `screenshot`. " +
+        "2. pixel mode: all four of `x`/`y` → `toX`/`toY`, measured on the most recent viewport `screenshot` " +
+        "— the result reports the same image-pixel → viewport-CSS mapping line as click_at, so read it when a " +
+        "drag lands somewhere unexpected. " +
         "Unavailable when this conversation's model cannot receive images.\n" +
         "The drag is dispatched as real mouse events (press, interpolated moves with the button held, " +
         "release), which drives JS-based drag handlers. A NATIVE HTML5 draggable=\"true\" element rides the " +

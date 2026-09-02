@@ -49,8 +49,9 @@
   the three branches build it; `SCREENSHOT_MAX_WIDTH` and the ~8000px-per-edge vision ceiling are
   measured on the PHYSICAL edge, because a 150%-scaled Windows display returns a bitmap half again over
   a CSS-measured cap; and `lastShot` keeps the clip in CSS px for the drift check plus
-  `pxPerCss = scale × zoom × dsf` for click_at's inversion (addressing.md). Both factors ride the ONE
-  metrics read — zoom from `cssVisualViewport.zoom`, zoom × dsf from
+  `pxPerCss = scale × zoom × dsf` as the PREDICTED image-px-per-CSS-px factor — since #66 only a
+  fallback, because the inversion reads the MEASURED bitmap instead (next two bullets, addressing.md).
+  Both factors ride the ONE metrics read — zoom from `cssVisualViewport.zoom`, zoom × dsf from
   `visualViewport.clientWidth / cssVisualViewport.clientWidth`, the physical twin of the CSS block — and
   each falls back to the pre-conversion arithmetic when its field is absent. That one metrics read
   happens AFTER the uid branch's `quadsOf` — `scrollIntoViewIfNeeded` inside it CHANGES the scroll,
@@ -62,6 +63,53 @@
   converts its clip the same way but leaves the PAYLOAD in CSS: the viewer draws boxes in exactly the
   doc size that payload declares, so converting the declared size too would move every box off its
   element.
+- **A screenshot has a FOURTH pixel unit the bridge cannot measure — the size Claude's API resizes it
+  to — so a VIEWPORT capture is PRE-FITTED to that size.** Claude answers a pixel question in the space
+  of the image it SEES, which is the API's own aspect-preserving downscale to the model's native limits
+  (https://platform.claude.com/docs/en/build-with-claude/vision +
+  https://platform.claude.com/docs/en/build-with-claude/vision-coordinates, both fetched 2026-09-02):
+  the STANDARD tier (every model before Claude 4.7) caps the long edge at 1568 px AND the whole image at
+  1568 visual tokens — one token per 28×28 patch, `ceil(w/28) × ceil(h/28)` — while the high-resolution
+  tier (Claude 4.7+) allows 2576 px / 4784 tokens; padding to the next multiple of 28 is added
+  bottom/right only and never shifts the origin. Field case (issue #66): a 1400×2197 portrait capture is
+  3950 tokens, so a standard-tier model is handed it resized to 874×1372 — a coordinate space ×1.60
+  away from the bytes sent — and NO layer told either side the image's size. The report itself
+  measured a pure ≈×1.145 scale skew (zero offset), which neither tier's resize alone produces; the
+  leading explanation is the second defect (next bullet: the mapping was predicted, never measured),
+  and only a REPORTED mapping can tell a wrong space from a wrong aim. `captureShot`'s viewport branch
+  therefore takes its `scale` from `viewportShotScale` (`axtree.js`, pure and unit-tested): the existing
+  physical caps first, then — when the resulting bitmap would not `visionFits` — shrunk to
+  `visionFitSize` of it, the docs' own binary search ported faithfully (round-half-to-even on the short
+  edge, so the reference table's `1075×1520 → 924×1307` reproduces exactly). The shrink RE-CHECKS in a
+  bounded loop rather than trusting one pass: the fit is computed on the ROUNDED bitmap size, and a
+  single pixel of rounding can put the result back over a 28px patch boundary. The target is the STANDARD
+  tier for EVERY model, because the serving model's tier is NOT knowable here — the composer's model
+  choices are admin-mapped tier ALIASES onto concrete models (`modelVisionPolicy.ts`, `visionForModel`)
+  — and standard is the one answer that is exact for every Claude model, costing only fidelity on tall
+  viewports for a high-resolution-tier one (the common 1920×1080 viewport already fits at 1400×788 =
+  1450 tokens, unchanged; tier-aware fitting is a backlog item). ELEMENT and fullPage captures are
+  deliberately NOT fitted: uid-mode fractions are scale-invariant, and fullPage never feeds coordinates
+  at all (pixel mode refuses it) — which is exactly where a standard-tier fit would gut a long page's
+  legibility.
+- **The pixel→CSS mapping is MEASURED off the returned JPEG, and every screenshot says how big the image
+  is.** `pxPerCss = scale × zoom × dsf` is a PREDICTION about bytes Chrome had not returned yet, and
+  #66's other half is most likely exactly that gap: the reported ≈×1.145 skew is what a bitmap 7/8 of
+  the predicted size would produce (unconfirmed — the field display could not be inspected), and
+  nothing ever compared the two. So the worker parses the
+  capture's own SOF marker (`jpegDimensions`, `axtree.js`, pure: SOI, segment walk, SOF = `0xC0`–`0xCF`
+  minus DHT/JPG/DAC, stop at SOS/EOI, `0xFF` fill tolerated; the first ~64 KiB is decoded first and the
+  whole payload only when the SOF is not in it) and stores `imageWidth`/`imageHeight` plus per-axis
+  `pxPerCssX`/`pxPerCssY` on `lastShot`. Those are the truth `shotCssPoint` bounds-checks and inverts
+  (addressing.md); the theoretical factor survives ONLY as the fallback for a bitmap that will not
+  parse. And because the model cannot measure the image it is looking at, EVERY screenshot result
+  carries `screenshotImageNote` on the bridge `note` channel that already existed: a viewport capture
+  reports `Image: W×H px = the visible viewport (cssW×cssH CSS px), k image px per CSS px` — plus the
+  browser zoom and display scale when either is not 1 — and states that `click_at`/`drag` pixel
+  coordinates are positions on THIS image (x 0–W−1, y 0–H−1); an element capture says to aim inside it
+  with uid-mode fractions instead; a fullPage capture says pixel coordinates cannot be measured on it
+  and to take a plain viewport screenshot. Extension-side only (manifest 0.26.0), so
+  `BROWSER_EXTENSION_MIN_COMPATIBLE` stays put and an old build simply captures unfitted and says
+  nothing — the case the server's own oversize caveat covers (addressing.md, contract.md).
 - **An EMPTY walk is retried and then says it is empty; it never passes for a blank page.** Two different
   too-early reads get two different treatments in the action tail. A snapshot BYTE-IDENTICAL to the
   previous one gets one 250ms re-poll (`STALE_SNAPSHOT_REPOLL_MS`) — a late AX flush after the lifecycle

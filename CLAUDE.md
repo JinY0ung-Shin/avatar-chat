@@ -102,7 +102,12 @@ These are the invariants the project is built around. New work should reinforce 
   elements are
   addressed by `backendNodeId` (plus screenshot-pixel `click_at` as the deliberate escape hatch for
   AX-invisible targets), so an op that cannot be executed directly must be driven the way a
-  PERSON would AND re-read what it landed on instead of assuming success. `read_cookies` returns the
+  PERSON would AND re-read what it landed on instead of assuming success. A VIEWPORT screenshot is
+  PRE-FITTED to the native image size Claude's API resizes to (standard tier: 1568 px per edge / 1568
+  visual tokens) and its pixel→CSS mapping is read off the MEASURED bitmap, never the capture formula,
+  because Claude answers a pixel question in the space of the image it SEES — and every pixel-mode
+  result reports the mapping it used, so a wrong coordinate SPACE stays distinguishable from a wrong
+  aim (#66). `read_cookies` returns the
   user's LIVE session cookies (httpOnly included) and `read_storage` the CURRENT tab's localStorage/
   sessionStorage (bearer/JWT tokens included — read via a FIXED `Runtime.evaluate` expression because
   `DOMStorage` is not exposed to `chrome.debugger`; the one page-JS exception, values untrusted), so BOTH

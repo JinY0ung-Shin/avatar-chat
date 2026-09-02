@@ -24,7 +24,7 @@ Durable constraints for this layer:
   together when it changes: this manifest, the `browserBridge.ts` default id, `README.md`'s example id, and
   any admin policy-registry path naming the id. The private half lives ONLY on the release machine; losing
   it orphans every install. The build script refuses to run on a mismatch and prints the bootstrap list.
-- **`BROWSER_EXTENSION_MIN_COMPATIBLE` (`browserExtensionUpdate.ts`) is a fleet-wide reinstall order.** Raise
+- **`BROWSER_EXTENSION_MIN_COMPATIBLE` (`browserExtensionBundle.ts`) is a fleet-wide reinstall order.** Raise
   it ONLY when the agent-facing op contract actually breaks — never merely because this folder changed.
   Below the floor, every install badges orange in the composer. `tests/infra.test.ts` enforces
   min ≤ bundled manifest version.
@@ -45,6 +45,20 @@ Durable constraints for this layer:
   across the gap, so a field missed in the middle arrives `undefined`. `chat.ts` is the PRIMARY size bound on
   extension-supplied strings — `browserTools.report()` adds only a defensive snapshot cap for old
   builds — so any new relayed field must be `.slice()`d there.
+- **A capture's pixel mapping is MEASURED from the returned bitmap, and a viewport capture is fitted to
+  the size Claude's API will resize it to.** `pxPerCss = scale × zoom × dsf` PREDICTS a bitmap Chrome has
+  not produced yet: issue #66 measured every pixel `click_at` landing a constant ≈×1.145 off — consistent with a
+  bitmap 7/8 of that prediction — while a tall capture is ALSO resized again by the API (standard tier:
+  1568 px per edge, 1568 visual tokens of 28×28 px; ×1.60 on a 1400×2197 shot), so the model answers
+  in a pixel space nobody here had computed. So `captureShot` parses
+  the JPEG's SOF dimensions (`jpegDimensions`) and stores `imageWidth`/`imageHeight` +
+  `pxPerCssX`/`pxPerCssY`, keeping the formula only as the fallback, and the VIEWPORT branch takes its
+  `scale` from `viewportShotScale`, which shrinks until `visionFits` holds. Element/fullPage captures
+  stay unfitted on purpose (uid fractions are scale-invariant; fullPage never feeds coordinates). The
+  tier constants (`VISION_STANDARD_MAX_EDGE`/`VISION_STANDARD_MAX_TOKENS` in `axtree.js`) mirror
+  https://platform.claude.com/docs/en/build-with-claude/vision (fetched 2026-09-02) and the server keeps
+  an INDEPENDENT TypeScript port for old installs (`agent/visionImage.ts`) — when the documented limits
+  move, both move.
 - **Language split applies INSIDE this folder.** `background.js`/`axtree.js` strings are ENGLISH on purpose —
   they are model-facing input (refusal reasons, error text the agent reads). Everything a PERSON reads
   (`options.html`, `consent.html`, `action.default_title`, `README.md`) is KOREAN. `manifest.json`

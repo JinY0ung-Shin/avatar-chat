@@ -164,6 +164,31 @@ with two deliberate v1 limits worth revisiting:
   knows the work died.
 - **risk:** low · **effort:** M · **breaking:** no
 
+## Browser screenshot vision fit (2026-09) — deferred follow-up
+
+The issue-#66 fix pre-fits every VIEWPORT screenshot to Claude's STANDARD resolution tier and measures
+the returned bitmap instead of trusting the capture formula (see
+[`architecture/browser-bridge/snapshots.md`](architecture/browser-bridge/snapshots.md)). One deliberate
+limit shipped with it:
+
+### BV1 — Tier-aware screenshot fit
+- **Files:** `extension/axtree.js` (`viewportShotScale`, the `VISION_STANDARD_*` constants),
+  `extension/background.js` (`captureShot`), `src/server/agent/visionImage.ts`, plus one optional op
+  field across the five wire layers (`agent/browserTools.ts` → `agent/events.ts` → `routes/chat.ts` →
+  client `lib/browserBridge.ts` → `background.js`).
+- **Why:** the fit target is the standard tier (1568 px per edge / 1568 visual tokens) for EVERY model,
+  while a Claude 4.7+ model reads the high-resolution tier (2576 px / 4784 tokens). A tall/portrait
+  viewport is therefore downscaled further than such a model needs and loses legibility it could have
+  had. Passing the run's resolution tier down as an OPTIONAL screenshot-op field (absent = standard, so
+  every old build and every unwired caller keeps today's behavior) would restore full fidelity there.
+- **Why deferred:** the serving model's tier is not knowable from where the decision is made. The
+  composer offers model TIER aliases that each deployment maps to concrete models
+  (`ANTHROPIC_DEFAULT_<TIER>_MODEL`, see `modelVisionPolicy.ts` / `visionForModel`), so "which
+  resolution tier will actually serve this run" needs new admin config or a probe — and guessing the
+  OTHER way (fitting to high-res for a standard-tier model) puts #66's ×1.6 coordinate skew straight
+  back. Standard-tier fitting is exact for every Claude model, so the cost of waiting is fidelity only.
+- **risk:** med · **effort:** M · **breaking:** no
+
 ## Recommended order when picking this up
 1. Cheap + independent: the two coverage-gap tests, T3.9(a).
 2. After Tier-1/2 settle: T3.2 → T3.5 (test-guarded, medium).

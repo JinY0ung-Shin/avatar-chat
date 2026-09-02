@@ -44,6 +44,12 @@ import {
   ariaSortByBackendId,
   sliderPlan,
   unlabeledInteractiveIds,
+  viewportShotScale,
+  jpegDimensions,
+  base64ToBytes,
+  screenshotImageNote,
+  pixelPointNote,
+  pixelDragNote,
   EXTRA_CLICKABLE_MAX,
   EXTRA_CLICKABLE_GROUP_HEAD,
 } from "./axtree.js";
@@ -411,6 +417,11 @@ const lastSnapshotByTab = new Map();
  * viewport size at CLICK time and refuses on drift. Non-viewport modes are
  * recorded too, so the refusal can say WHY those pixels don't map onto input
  * coordinates.
+ *
+ * `imageWidth`/`imageHeight` are MEASURED off the returned JPEG and
+ * `pxPerCssX`/`pxPerCssY` derive from them; `scale`/`pxPerCss` are the
+ * theoretical factors the capture ASKED for and survive only as the fallback
+ * (issue #66 — a request is not a measurement).
  */
 let lastShot = null;
 
@@ -2413,13 +2424,17 @@ async function shotCssPoint(tab, x, y) {
       },
     };
   }
-  // One stored factor carries the whole CSS→image mapping (captureShot's unit
-  // note). The `scale` fallback is defensive only: a worker restarted by an
-  // extension update clears `lastShot` outright, so a shot without the field
-  // cannot reach this line in practice.
-  const pxPerCss = lastShot.pxPerCss || lastShot.scale;
-  const imageWidth = Math.round(lastShot.clipWidth * pxPerCss);
-  const imageHeight = Math.round(lastShot.clipHeight * pxPerCss);
+  // The MEASURED bitmap is the mapping, per axis (issue #66): the model aims at
+  // pixels of the image it received, so the only honest inversion is the one
+  // derived from that image's real size. The theoretical `pxPerCss`
+  // (scale × zoom × dsf) and then bare `scale` remain as fallbacks — for a
+  // capture whose bytes could not be parsed, and for a `lastShot` written by an
+  // older worker before the extension updated under us.
+  const fallbackPxPerCss = lastShot.pxPerCss || lastShot.scale;
+  const imageWidth = lastShot.imageWidth || Math.round(lastShot.clipWidth * fallbackPxPerCss);
+  const imageHeight = lastShot.imageHeight || Math.round(lastShot.clipHeight * fallbackPxPerCss);
+  const pxPerCssX = lastShot.pxPerCssX || fallbackPxPerCss;
+  const pxPerCssY = lastShot.pxPerCssY || fallbackPxPerCss;
   if (x > imageWidth || y > imageHeight) {
     return {
       refusal: {
@@ -2453,14 +2468,20 @@ async function shotCssPoint(tab, x, y) {
       },
     };
   }
-  // The capture mapped one CSS px of the page onto `pxPerCss` image px
-  // (requested scale × browser zoom × device scale factor); dividing by that
-  // one factor lands on the exact point the model saw, clamped a hair inside
-  // the viewport — in CSS px, the space the input events want — so an
-  // exact-edge coordinate still hits the page.
+  // The capture mapped one CSS px of the page onto `pxPerCssX`/`pxPerCssY`
+  // image px; dividing by those lands on the exact point the model saw, clamped
+  // a hair inside the viewport — in CSS px, the space the input events want —
+  // so an exact-edge coordinate still hits the page. The image and CSS
+  // dimensions ride back with the point so the calling op can STATE the mapping
+  // it used: a wrong coordinate space and a wrong aim produce the same miss,
+  // and only the reported mapping tells them apart (issue #66).
   return {
-    cssX: Math.min(x / pxPerCss, lastShot.clipWidth - 1),
-    cssY: Math.min(y / pxPerCss, lastShot.clipHeight - 1),
+    cssX: Math.min(x / pxPerCssX, lastShot.clipWidth - 1),
+    cssY: Math.min(y / pxPerCssY, lastShot.clipHeight - 1),
+    imageWidth,
+    imageHeight,
+    cssWidth: lastShot.clipWidth,
+    cssHeight: lastShot.clipHeight,
   };
 }
 
@@ -4468,6 +4489,14 @@ async function buildExpandedPageText(tab) {
 const SCREENSHOT_MAX_WIDTH = 1400;
 /** fullPage capture height cap, CSS px — beyond this the image is cut off. */
 const SCREENSHOT_MAX_FULL_HEIGHT = 6000;
+/**
+ * How much of a capture to base64-decode when MEASURING it. A JPEG's frame
+ * header sits within the first few KB (after APP0/EXIF/ICC), so decoding a whole
+ * megabyte of entropy-coded pixels to read two 16-bit fields would be pure
+ * waste; captureShot retries on the full string if the parse comes back empty,
+ * which covers an encoder that puts a large colour profile in front.
+ */
+const JPEG_HEADER_PROBE_BYTES = 64 * 1024;
 
 // THREE pixel units meet in this function and only the middle one is the
 // protocol's (probe-measured, `tests/visual/zoom-capture.spec.ts`): every clip
@@ -4577,6 +4606,7 @@ async function captureShot(tab, message) {
       height: viewport.clientHeight || 768,
     };
   }
+  const mode = uidQuads ? "element" : message.fullPage ? "fullPage" : "viewport";
   clip.width = Math.max(1, Math.round(clip.width));
   clip.height = Math.max(1, Math.round(clip.height));
   // The three branches above measure the page in CSS px; the protocol wants DIP.
@@ -4593,7 +4623,29 @@ async function captureShot(tab, message) {
   // Bound the pixel size for the model: cap the width, and stay inside the
   // 8000px-per-edge ceiling vision APIs enforce even for tall captures. Both
   // bounds are on the returned BITMAP, which is dsf times this clip.
-  const scale = Math.min(1, SCREENSHOT_MAX_WIDTH / (clip.width * dsf), 7900 / (clip.height * dsf));
+  //
+  // A VIEWPORT capture takes one bound more (issue #66): the API resizes an
+  // oversized image to the model's native limits BEFORE the model sees it, and
+  // the model then answers pixel questions in the resized space — so a capture
+  // the caps above happily allow (1400×2197 = 3950 visual tokens) reaches a
+  // standard-tier model at 874×1372, a coordinate space ×1.60 away from the
+  // bytes we sent, with nothing on the wire saying so. Fitting it HERE makes the
+  // image we send the image the model sees, which is the vision docs' own advice
+  // for coordinate work (axtree.js's vision block).
+  //
+  // The other two modes deliberately keep the plain caps. Element captures feed
+  // click_at/drag through uid-mode FRACTIONS, which are scale-invariant — the
+  // fit would buy nothing and cost detail — and fullPage pixels are refused by
+  // shotCssPoint outright, so they never become coordinates at all; squeezing a
+  // tall page into 1568 standard-tier px would only make it unreadable for the
+  // high-resolution-tier models that can take it whole.
+  const scale =
+    mode === "viewport"
+      ? viewportShotScale(clip.width * dsf, clip.height * dsf, {
+          maxWidth: SCREENSHOT_MAX_WIDTH,
+          maxHeight: 7900,
+        })
+      : Math.min(1, SCREENSHOT_MAX_WIDTH / (clip.width * dsf), 7900 / (clip.height * dsf));
   // LOAD-BEARING, not tidiness. In a HEADFUL browser — which is the whole fleet,
   // since the bridge drives the user's own window — a drawn action highlight IS
   // included in what captureScreenshot returns (probe-measured,
@@ -4613,6 +4665,21 @@ async function captureShot(tab, message) {
   if (!data) {
     throw new Error("The browser returned an empty screenshot. Retry after the page settles.");
   }
+  // MEASURE what came back instead of trusting what was asked for (issue #66).
+  // `scale × zoom × dsf` is a PREDICTION assembled from Page.getLayoutMetrics;
+  // #66's measured ≈×1.145 skew is consistent with a bitmap 7/8 of that
+  // prediction (every pixel click inheriting the 8/7 error, invisibly), and
+  // nothing ever compared the two. The JPEG's own frame header is the ground truth and costs
+  // one header parse. Only the first few KB are decoded — the SOF marker sits
+  // near the front — with a whole-image retry for an encoder that buries it
+  // behind a large EXIF/ICC block, and the prediction survives as the fallback
+  // for a reply this parser cannot read at all.
+  const measured =
+    jpegDimensions(base64ToBytes(data, JPEG_HEADER_PROBE_BYTES)) ||
+    jpegDimensions(base64ToBytes(data));
+  const pxPerCss = scale * zoom * dsf;
+  const imageWidth = measured?.width || Math.max(1, Math.round(cssClipWidth * pxPerCss));
+  const imageHeight = measured?.height || Math.max(1, Math.round(cssClipHeight * pxPerCss));
   // Remember this capture's pixel→CSS mapping so click_at can invert it. Only
   // a viewport capture's origin coincides with the input coordinate space;
   // element/fullPage clips are page-absolute and must be refused there. URL,
@@ -4621,17 +4688,43 @@ async function captureShot(tab, message) {
   lastShot = {
     tabId: tab.id,
     url: tab.url || "",
-    mode: message.uid ? "element" : message.fullPage ? "fullPage" : "viewport",
+    mode,
     scale,
     clipWidth: cssClipWidth,
     clipHeight: cssClipHeight,
     // Image px per CSS px of the page: what was asked for times what the
     // protocol applied on top. `scale` alone was the whole mapping only at 100%
-    // zoom on an unscaled display, so click_at inverts THIS number instead.
-    pxPerCss: scale * zoom * dsf,
+    // zoom on an unscaled display. Kept as the FALLBACK the per-axis measured
+    // factors below fall through to.
+    pxPerCss,
+    // The mapping click_at actually inverts: measured bitmap ÷ CSS clip, per
+    // axis, because a rounded bitmap edge is not exactly the same fraction on
+    // both and a coordinate near the far edge is where that shows.
+    imageWidth,
+    imageHeight,
+    pxPerCssX: imageWidth / cssClipWidth,
+    pxPerCssY: imageHeight / cssClipHeight,
+    // Reported in the note only when they are not 1 — the numbers that explain
+    // a surprising factor to whoever is measuring pixels on the image.
+    zoom,
+    dsf,
     pageX: viewport.pageX || 0,
     pageY: viewport.pageY || 0,
   };
+  // Say what size image this IS. Nothing else in the five layers does, so a
+  // pixel coordinate was previously measured against a guess. Appended AFTER the
+  // beyondViewport caveat: that one says do not measure coordinates here at all,
+  // which reframes this line, and capNote truncates the tail.
+  const imageNote = screenshotImageNote({
+    mode,
+    imageWidth,
+    imageHeight,
+    cssWidth: cssClipWidth,
+    cssHeight: cssClipHeight,
+    zoom,
+    dsf,
+  });
+  note = [note, imageNote].filter(Boolean).join(" ");
   return { imageBase64: data, imageMimeType: "image/jpeg", ...(note ? { note } : {}) };
 }
 
@@ -5581,6 +5674,11 @@ async function performOp(message, stagingOrigin) {
     const point = await shotCssPoint(tab, x, y);
     if (point.refusal) return point.refusal;
     const { cssX, cssY } = point;
+    // State the mapping this click used. The landed-on element below says WHAT
+    // was hit; without the mapping beside it, a mis-scaled coordinate SPACE
+    // (issue #66) is indistinguishable from a mis-measured target, and the agent
+    // retried the same numbers.
+    note = [note, pixelPointNote({ ...point, x, y })].filter(Boolean).join(" ");
     const described = await describePoint({ tabId: tab.id }, cssX, cssY);
     // The only op whose subject is a COORDINATE, so the hit test above is also
     // the only thing that knows which element to draw on. Root session by
@@ -5707,6 +5805,25 @@ async function performOp(message, stagingOrigin) {
       target = { tabId: tab.id };
       from = { x: start.cssX, y: start.cssY };
       to = { x: end.cssX, y: end.cssY };
+      // Both ends of the mapping, for the same reason click_at reports its one
+      // (issue #66): a drag that lands short is as likely to have a bad END as
+      // a bad start, and neither is visible in the drop report alone. `start`
+      // and `end` describe the same screenshot — shotCssPoint refuses anything
+      // else — so one image size covers both.
+      note = [
+        note,
+        pixelDragNote({
+          ...start,
+          x: message.x,
+          y: message.y,
+          toX: message.toX,
+          toY: message.toY,
+          toCssX: end.cssX,
+          toCssY: end.cssY,
+        }),
+      ]
+        .filter(Boolean)
+        .join(" ");
       // A pixel drag has no uid to check, so this hit test is the only thing
       // between a screenshot coordinate and the OS file dialog a press on a
       // file input can open.

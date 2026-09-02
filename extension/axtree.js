@@ -2497,3 +2497,293 @@ export function mergeTextLines(acc, next) {
   );
   return acc.slice(0, head).concat(middle, acc.slice(acc.length - tail));
 }
+
+// ------------------------------------------------- screenshot pixel geometry
+
+/**
+ * WHY these constants live here at all: a screenshot's pixels are the ONLY
+ * coordinate space `click_at`/`drag` pixel mode can be aimed in, and the model
+ * does not answer in the space of the bytes we sent — it answers in the space of
+ * the image it SEES, i.e. AFTER the API resized our capture to the model's
+ * native limits (platform.claude.com/docs/en/build-with-claude/vision and
+ * /vision-coordinates, read 2026-09-02). Issue #66: a 1400×2197 viewport capture
+ * is 3950 visual tokens, so a standard-tier model is served it downscaled to
+ * 874×1372 — its coordinate space stands ×1.60 away from the bytes we produced,
+ * and NO layer told either side. Pure scale, zero offset, which is exactly the
+ * signature of a resize nobody told the bridge about. (The ≈×1.145 the field
+ * actually measured fits neither tier's resize alone; the leading explanation is
+ * the SECOND, independent defect — the mapping was predicted rather than
+ * measured, `jpegDimensions` below.) The fix is the docs' own
+ * recommendation for coordinate work: pre-resize so the image we produce IS the
+ * image the model sees.
+ *
+ * One patch = 28×28 px; a resized image must fit BOTH a max edge and a max
+ * visual-token count. We target the STANDARD tier for EVERY model on purpose:
+ * Noah cannot know the serving model's tier (model ids are admin-configured
+ * aliases), and the standard tier is the smaller of the two, so fitting it is
+ * exact for every Claude model instead of correct for one of them. The only cost
+ * is fidelity on tall viewports for a high-resolution-tier model — a typical
+ * 1920×1080 viewport already fits at 1400×788 (1450 tokens) and is untouched.
+ */
+export const VISION_PATCH_PX = 28;
+/** Standard-tier longest edge, in image px (all models before Claude 4.7). */
+export const VISION_STANDARD_MAX_EDGE = 1568;
+/** Standard-tier visual-token budget — the bound a TALL image actually hits. */
+export const VISION_STANDARD_MAX_TOKENS = 1568;
+
+/** Visual tokens an image of this pixel size costs: one per 28×28 patch. */
+export function visionTokens(width, height) {
+  return Math.ceil(width / VISION_PATCH_PX) * Math.ceil(height / VISION_PATCH_PX);
+}
+
+/**
+ * Whether an image of this pixel size reaches the model UNRESIZED. Both edges
+ * are measured PADDED to the next whole patch, because the API pads before it
+ * counts (padding is added bottom/right only and shifts no coordinate).
+ */
+export function visionFits(width, height, limits) {
+  const maxEdge = Number(limits?.maxEdge) > 0 ? Number(limits.maxEdge) : VISION_STANDARD_MAX_EDGE;
+  const maxTokens =
+    Number(limits?.maxTokens) > 0 ? Number(limits.maxTokens) : VISION_STANDARD_MAX_TOKENS;
+  return (
+    Math.ceil(width / VISION_PATCH_PX) * VISION_PATCH_PX <= maxEdge &&
+    Math.ceil(height / VISION_PATCH_PX) * VISION_PATCH_PX <= maxEdge &&
+    visionTokens(width, height) <= maxTokens
+  );
+}
+
+/**
+ * Round half to EVEN — the tie rule the vision docs' reference implementation
+ * uses on the short edge. A plain Math.round differs by one pixel on exact
+ * halves, and one pixel is the difference between an aspect ratio that
+ * reproduces the API's own answer and one that quietly does not.
+ */
+function roundTiesToEven(value) {
+  const floor = Math.floor(value);
+  if (value - floor !== 0.5) return Math.round(value);
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
+/**
+ * The pixel size the API resizes an image DOWN to — a faithful port of the
+ * reference implementation in the vision docs, so our pre-fit lands on the same
+ * numbers the server would have chosen. Binary search on the LONG edge for the
+ * largest aspect-preserving size that still fits; an image that already fits is
+ * returned untouched (the API does not upscale).
+ */
+export function visionFitSize(width, height, limits) {
+  if (visionFits(width, height, limits)) return [width, height];
+  if (height > width) {
+    // Solve the landscape problem and swap back: the search below assumes the
+    // WIDTH is the long edge.
+    const [resizedH, resizedW] = visionFitSize(height, width, limits);
+    return [resizedW, resizedH];
+  }
+  const aspectRatio = width / height;
+  const shortOf = (long) => Math.max(roundTiesToEven(long / aspectRatio), 1);
+  let lo = 1; // always fits
+  let hi = width; // never fits
+  while (lo + 1 < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (visionFits(mid, shortOf(mid), limits)) lo = mid;
+    else hi = mid;
+  }
+  return [lo, shortOf(lo)];
+}
+
+/**
+ * The `scale` a VIEWPORT capture should ask `Page.captureScreenshot` for.
+ *
+ * Inputs are PHYSICAL px — the size the bitmap would come back at unscaled
+ * (clip DIP × the display's device scale factor), because that is the only edge
+ * the caps and the vision limits mean anything against (captureShot's unit
+ * note). Two rounds, in this order:
+ *
+ *  1. the bridge's own caps — the width bound the model's image block is sized
+ *     for, and the ~8000px-per-edge ceiling vision APIs reject outright;
+ *  2. the vision FIT: if the bitmap those caps produce would be resized by the
+ *     API anyway, shrink it here so the image we send IS the image the model
+ *     sees and its pixel coordinates come back in OUR space (issue #66).
+ *
+ * The caps arrive through `opts` because background.js owns them; the defaults
+ * only exist so this stays callable (and testable) on its own. The re-check loop
+ * is not decoration: the fit is computed on the ROUNDED bitmap size, and one
+ * pixel of rounding can put the result back over a patch boundary.
+ */
+export function viewportShotScale(physicalWidth, physicalHeight, opts) {
+  const maxWidth = Number(opts?.maxWidth) > 0 ? Number(opts.maxWidth) : 1400;
+  const maxHeight = Number(opts?.maxHeight) > 0 ? Number(opts.maxHeight) : 7900;
+  const pw = Math.max(1, Math.round(Number(physicalWidth) > 0 ? Number(physicalWidth) : 1));
+  const ph = Math.max(1, Math.round(Number(physicalHeight) > 0 ? Number(physicalHeight) : 1));
+  let scale = Math.min(1, maxWidth / pw, maxHeight / ph);
+  for (let guard = 0; guard < 4; guard += 1) {
+    const w = Math.max(1, Math.round(pw * scale));
+    const h = Math.max(1, Math.round(ph * scale));
+    if (visionFits(w, h, opts)) break;
+    const [fitW] = visionFitSize(w, h, opts);
+    if (!(fitW > 0) || fitW >= w) break; // no progress to make; do not spin
+    scale = scale * (fitW / w);
+  }
+  return Math.min(1, Math.max(scale, 1 / 10000));
+}
+
+/**
+ * Decode base64 to bytes, optionally only the first `maxBytes` worth.
+ *
+ * The prefix is what makes measuring a screenshot cheap: a JPEG's SOF marker
+ * sits in the first few KB, so there is no reason to materialize a megabyte of
+ * pixels to read two 16-bit fields. The slice is base64-ALIGNED (whole 4-char
+ * groups) because `atob` refuses anything else, and whitespace is stripped first
+ * so the alignment math holds for a wrapped string too.
+ */
+export function base64ToBytes(base64, maxBytes) {
+  if (typeof base64 !== "string" || !base64) return null;
+  let text = base64.replace(/\s+/g, "");
+  if (Number(maxBytes) > 0) {
+    const chars = Math.floor(Number(maxBytes) / 3) * 4;
+    if (chars > 0 && chars < text.length) text = text.slice(0, chars);
+  }
+  try {
+    const binary = atob(text);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    // Not base64 (or a slice that landed mid-group despite the alignment).
+    return null;
+  }
+}
+
+/**
+ * The pixel size a JPEG DECLARES, read off its frame header.
+ *
+ * This is the whole point of issue #66's mapping half: `pxPerCss` as computed
+ * from `Page.getLayoutMetrics` is what the capture ASKED for, and a request is
+ * not a measurement — the field factor 8/7 is consistent with Chrome returning a
+ * bitmap 7/8 the predicted size on that display. So click_at inverts the size
+ * the BYTES report and keeps the arithmetic only as a fallback.
+ *
+ * Walks the marker segments rather than trusting a fixed offset: EXIF/ICC/comment
+ * segments precede the frame header on a real encoder's output. SOF is any
+ * 0xC0–0xCF marker EXCEPT 0xC4 (DHT), 0xC8 (JPG) and 0xCC (DAC), which share the
+ * range but are not frames — so progressive (SOF2) and every other variant are
+ * read with no special case. Returns null on anything malformed, non-JPEG, or
+ * truncated before the frame: the caller has a fallback, and a WRONG size would
+ * silently poison every pixel coordinate.
+ */
+export function jpegDimensions(bytes) {
+  if (!bytes || typeof bytes.length !== "number" || bytes.length < 4) return null;
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  let cursor = 2;
+  while (cursor + 1 < bytes.length) {
+    if (bytes[cursor] !== 0xff) return null;
+    // Any number of 0xFF fill bytes may pad the gap before a marker.
+    let marker = cursor + 1;
+    while (marker < bytes.length && bytes[marker] === 0xff) marker += 1;
+    if (marker >= bytes.length) return null;
+    const code = bytes[marker];
+    // SOS starts entropy-coded data and EOI ends the stream: past either point
+    // there is no frame header left to find.
+    if (code === 0xda || code === 0xd9) return null;
+    // Standalone markers (TEM, RSTn) carry no length field.
+    if (code === 0x01 || (code >= 0xd0 && code <= 0xd7)) {
+      cursor = marker + 1;
+      continue;
+    }
+    if (marker + 2 >= bytes.length) return null;
+    const length = (bytes[marker + 1] << 8) | bytes[marker + 2];
+    if (length < 2) return null; // the length counts itself; anything less is junk
+    const isFrame = code >= 0xc0 && code <= 0xcf && code !== 0xc4 && code !== 0xc8 && code !== 0xcc;
+    if (isFrame) {
+      // length(2) precision(1) height(2) width(2) — height comes FIRST.
+      if (length < 8 || marker + 7 >= bytes.length) return null;
+      const height = (bytes[marker + 4] << 8) | bytes[marker + 5];
+      const width = (bytes[marker + 6] << 8) | bytes[marker + 7];
+      if (!(width > 0) || !(height > 0)) return null;
+      return { width, height };
+    }
+    cursor = marker + 1 + length;
+  }
+  return null;
+}
+
+/**
+ * The bridge note that rides back with EVERY screenshot.
+ *
+ * Before #66 no layer told the model what size image it was looking at, so a
+ * pixel coordinate was measured against a guess. Stating the size — and, for a
+ * viewport capture, the factor onto the CSS space the click lands in — is what
+ * makes a pixel-mode aim checkable instead of hopeful. Zoom and display scale
+ * are named only when they are NOT 1: on the common case they are noise, and on
+ * a scaled display they are the reason the numbers look surprising.
+ */
+export function screenshotImageNote(info) {
+  const width = Math.max(1, Math.round(Number(info?.imageWidth) || 1));
+  const height = Math.max(1, Math.round(Number(info?.imageHeight) || 1));
+  if (info?.mode === "element") {
+    return (
+      `Image: ${width}×${height} px, one element only — aim inside it with click_at/drag uid mode ` +
+      "(xFraction/yFraction), not pixel coordinates."
+    );
+  }
+  if (info?.mode === "fullPage") {
+    return (
+      `Image: ${width}×${height} px, full page — pixel coordinates cannot be measured on it; take a ` +
+      "plain viewport screenshot for click_at/drag."
+    );
+  }
+  const cssWidth = Math.max(1, Math.round(Number(info?.cssWidth) || 1));
+  const cssHeight = Math.max(1, Math.round(Number(info?.cssHeight) || 1));
+  const zoom = Number(info?.zoom) > 0 ? Number(info.zoom) : 1;
+  const dsf = Number(info?.dsf) > 0 ? Number(info.dsf) : 1;
+  const display =
+    Math.abs(zoom - 1) > 0.005 || Math.abs(dsf - 1) > 0.005
+      ? ` (browser zoom ${Math.round(zoom * 100)}%, display scale ${dsf.toFixed(2)}×)`
+      : "";
+  return (
+    `Image: ${width}×${height} px = the visible viewport (${cssWidth}×${cssHeight} CSS px), ` +
+    `${(width / cssWidth).toFixed(3)} image px per CSS px${display}. click_at/drag pixel coordinates ` +
+    `are positions on THIS image (x 0–${width - 1}, y 0–${height - 1}).`
+  );
+}
+
+/**
+ * The mapping a pixel-mode click actually used, reported with the click.
+ *
+ * The landed-on element already says WHAT was hit; this says WHERE the bridge
+ * thought it was aiming, which is the only way to tell a mis-measured target
+ * apart from a mis-scaled coordinate SPACE. The instruction is deliberately
+ * "correct ONCE": #66's failure mode is a constant factor, so one corrected
+ * re-aim either lands or proves the space is not the problem, while retrying the
+ * same numbers can only miss again.
+ */
+export function pixelPointNote(info) {
+  const width = Math.max(1, Math.round(Number(info?.imageWidth) || 1));
+  const height = Math.max(1, Math.round(Number(info?.imageHeight) || 1));
+  const cssWidth = Math.max(1, Math.round(Number(info?.cssWidth) || 1));
+  const cssHeight = Math.max(1, Math.round(Number(info?.cssHeight) || 1));
+  return (
+    `Pixel (${Math.round(Number(info?.x) || 0)}, ${Math.round(Number(info?.y) || 0)}) on the ` +
+    `${width}×${height} px screenshot → viewport point (${Math.round(Number(info?.cssX) || 0)}, ` +
+    `${Math.round(Number(info?.cssY) || 0)}) of ${cssWidth}×${cssHeight} CSS px. If the element below ` +
+    "is not your target, the coordinate space is off — compare where that element sits on the " +
+    "screenshot with where you aimed and correct once, or use uid mode."
+  );
+}
+
+/**
+ * The same mapping for a pixel-mode drag — both ends, since a drag that lands
+ * short is as likely to have a bad END as a bad start. Shorter than the click
+ * note on purpose: a drag's note already competes with the drop report for the
+ * same capped budget, and the diagnosis rule is stated in the tool description.
+ */
+export function pixelDragNote(info) {
+  const width = Math.max(1, Math.round(Number(info?.imageWidth) || 1));
+  const height = Math.max(1, Math.round(Number(info?.imageHeight) || 1));
+  const r = (value) => Math.round(Number(value) || 0);
+  return (
+    `Pixels (${r(info?.x)}, ${r(info?.y)})→(${r(info?.toX)}, ${r(info?.toY)}) on the ` +
+    `${width}×${height} px screenshot → viewport (${r(info?.cssX)}, ${r(info?.cssY)})→` +
+    `(${r(info?.toCssX)}, ${r(info?.toCssY)}) CSS px.`
+  );
+}

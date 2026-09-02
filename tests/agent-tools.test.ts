@@ -5067,6 +5067,24 @@ describe("browser copy_text tool", () => {
   });
 });
 
+/**
+ * Base64 of a JPEG carrying nothing but a frame header of the given size. The
+ * server's #66 size check reads the SOF marker and never decodes pixels, so a
+ * decodable image would only make the fixture harder to read.
+ */
+function jpegBase64(width: number, height: number): string {
+  return Buffer.from(
+    Uint8Array.from([
+      0xff, 0xd8, // SOI
+      0xff, 0xc0, 0x00, 0x11, 0x08, // SOF0, length 17, 8-bit precision
+      (height >> 8) & 0xff, height & 0xff,
+      (width >> 8) & 0xff, width & 0xff,
+      0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, // 3 components
+      0xff, 0xd9, // EOI
+    ]),
+  ).toString("base64");
+}
+
 describe("browser bridge reading, forms, and screenshots", () => {
   const ok = (extra: Record<string, unknown> = {}) =>
     vi.fn(async () => ({
@@ -5207,6 +5225,81 @@ describe("browser bridge reading, forms, and screenshots", () => {
     const both = await callTool(tools, "screenshot", { uid: "e2", fullPage: true });
     expect(both.isError).toBe(true);
     expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns when a viewport capture is bigger than a standard-resolution model natively sees (#66)", async () => {
+    // The field capture: 1400×2197 px is 3950 visual tokens, so the API hands a
+    // standard-tier model an 874×1372 downscale — and the model then answers
+    // pixel questions in THAT space, every coordinate ×1.60 out. Extension
+    // builds from 0.26.0 pre-fit the capture; an older install cannot, so the
+    // server has to name the factor instead of letting clicks miss silently.
+    const execute = ok({
+      image: { base64: jpegBase64(1400, 2197), mimeType: "image/jpeg" },
+      snapshot: "- button 「저장」 [uid=e1]",
+    });
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    const res = await callTool(tools, "screenshot", {});
+    const out = res.content[0].text ?? "";
+    expect(res.isError).toBeFalsy();
+    expect(out).toContain("This capture is 1400×2197 px");
+    expect(out).toContain("874×1372 px a standard-resolution model sees natively");
+    expect(out).toContain("constant factor (×1.60)");
+    expect(out).toContain("multiply your coordinates by 1.60 once");
+    // SERVER-authored prose, so it must land OUTSIDE the untrusted quarantine:
+    // a caveat the model reads as page content is a caveat it may discount.
+    expect(out.indexOf("This capture is")).toBeLessThan(out.indexOf("<page_content>"));
+  });
+
+  it("says nothing about size when the capture already fits the model's native vision size", async () => {
+    // A 1400×788 viewport is 1450 visual tokens — the model sees these exact
+    // pixels, so there is no factor to warn about and the report stays quiet.
+    const execute = ok({ image: { base64: jpegBase64(1400, 788), mimeType: "image/jpeg" } });
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    const res = await callTool(tools, "screenshot", {});
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).not.toContain("standard-resolution model");
+  });
+
+  it("leaves uid and fullPage captures un-caveated however big their bitmap is", async () => {
+    // A uid capture is clicked by scale-invariant fractions and pixel mode
+    // refuses a fullPage image outright, so neither can mislead a coordinate —
+    // and a size warning on them would just teach the model to skim caveats.
+    const execute = ok({ image: { base64: jpegBase64(1400, 2197), mimeType: "image/jpeg" } });
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    const byUid = await callTool(tools, "screenshot", { uid: "e2" });
+    expect(byUid.content[0].text).not.toContain("standard-resolution model");
+    const fullPage = await callTool(tools, "screenshot", { fullPage: true });
+    expect(fullPage.content[0].text).not.toContain("standard-resolution model");
+  });
+
+  it("stays silent, and never errors, when the capture's bytes cannot be measured", async () => {
+    // A PNG, a truncated buffer, a future format: a warning we cannot
+    // substantiate is worse than none, and the screenshot must still work.
+    const execute = ok({ image: { base64: "bm90LWEtanBlZw==", mimeType: "image/jpeg" } });
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    const res = await callTool(tools, "screenshot", {});
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).not.toContain("standard-resolution model");
+    expect(res.content[1]).toEqual({
+      type: "image",
+      data: "bm90LWEtanBlZw==",
+      mimeType: "image/jpeg",
+    });
+  });
+
+  it("points the pixel-mode tools at the mapping line their own result carries", async () => {
+    // A wrong coordinate space is only diagnosable if the model knows the
+    // result states the mapping — and knows a miss means "wrong space", not
+    // "aim again with the same numbers".
+    const tools = buildBrowserTools({ execute: ok(), allowed: true, vision: true });
+    const descriptionOf = (name: string) =>
+      (tools.find((t) => t.name === name) as { description?: string } | undefined)?.description ?? "";
+    expect(descriptionOf("screenshot")).toContain("bridge note states the image's pixel size (W×H)");
+    expect(descriptionOf("click_at")).toContain(
+      "CHECK BOTH the reported landed-on element and the mapping line",
+    );
+    expect(descriptionOf("click_at")).toContain("do NOT retry the same numbers");
+    expect(descriptionOf("drag")).toContain("image-pixel → viewport-CSS mapping line");
   });
 });
 
