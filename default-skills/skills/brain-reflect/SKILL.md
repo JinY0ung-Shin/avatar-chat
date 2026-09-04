@@ -41,7 +41,15 @@ members' individual conversations would violate their privacy.
    shows as a pending/dangling node until you create that note).
 4. **Append-or-update, never mass-rewrite.** One fact, one home: UPDATE the existing note instead
    of forking a near-duplicate. Remove notes superseded by a newer decision.
-5. Update `wiki/index.md` and APPEND a dated entry to `wiki/log.md` summarizing adds/updates/deletes.
+   **A note states the CURRENT truth only.** When a fact changed, REPLACE the old value with the
+   new one — never narrate the change inside the note ("previously X, changed to Y on <date>",
+   "기존에는 … 였으나 <날짜>에 … 로 변경", a `## History` / `## 변경 이력` section, or an old value
+   kept "for reference"). The dated context already lives in the `raw/` capture, and the change
+   itself goes into your `wiki/log.md` entry (step 5) — that log is the ONLY place history belongs in
+   `wiki/`. brain-lint deletes such narrative wherever it finds it, so do not write it.
+5. Update `wiki/index.md` and APPEND a dated entry to `wiki/log.md` summarizing adds/updates/deletes
+   — for an UPDATE that changed a value, one terse line naming the note and `old → new`; this is
+   where the change history is kept, not in the note.
 6. Optionally archive raw notes you fully consolidated.
 7. **Commit once.** For group scope, if a write is denied (member, not admin), report findings —
    do not retry via Bash.

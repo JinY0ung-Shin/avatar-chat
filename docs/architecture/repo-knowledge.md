@@ -103,6 +103,18 @@
   `mcp__group_repo__write_file` (group) + `commit` — there is NO separate "brain write" tool, so a
   capture is a repo write plus a commit (uncommitted = not persisted). It composes with the backfill
   loop: `request_info` ESCALATES a true unknown to the owner, `brain-ingest` RETAINS the answer.
+- **`wiki/` notes state the CURRENT truth; change history lives in `raw/` + git.** `brain-lint` (the
+  hygiene default-skill — skill-only, no server lint code; the `[[link]]` resolution the graph view uses
+  lives in `knowledgeGraph.ts`) strips "previously X, changed to Y on <date>" narrative out of `wiki/`
+  notes and never edits `raw/` (the original-capture archive) or `wiki/log.md` (brain-reflect's
+  append-only pass log); removed history is NOT relocated anywhere. Fixes go through `edit_file`
+  (snippet replacement), never a `write_file` rewrite. The WRITE side carries the same rule:
+  brain-reflect REPLACES a changed value and records it as one terse `old → new` line in `wiki/log.md`,
+  brain-ingest keeps the dated context in the `raw/` capture — `tests/agent-core.test.ts` pins all
+  three wordings. The standing prompt states the same rule too (`brainSection` in `promptBuilder.ts`,
+  the `currentTruth` sentence) on every WRITE-capable run — owner/routine, shared-account teammate,
+  personal bot — and on no read-only one (plain teammate, consultation), because the avatar also
+  edits `wiki/` directly with the repo tools, where a skill-only rule would never reach.
 - **`agents/<dir>/` is the same convention one level down.** Each personal bot (내 봇) keeps its own
   `wiki/` + `raw/` + `CLAUDE.md` under `agents/<memory_dir>/` in the SAME personal repo; the root
   `wiki/`/`raw/` vault stays the OWNER's and is untouched by (and unreachable from) a bot run. A

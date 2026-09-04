@@ -237,6 +237,15 @@ function brainSection(
   if (request.knowledgeRepoConfigured === false) {
     return null;
   }
+  // Write-side convention, stated on every run that CAN write notes. It rides
+  // the per-turn prompt (not just the brain-* skills) because the avatar also
+  // edits wiki/ directly with the repo tools, and a skill-only rule never
+  // reaches that path: a curated note states the current truth, the dated
+  // context stays in raw/, and brain-lint deletes "previously X, changed to Y
+  // on <date>" narrative wherever it finds it. Read-only runs (plain teammate,
+  // consultation) do not carry it — they cannot write a note at all.
+  const currentTruth =
+    ' A `wiki/` note states the CURRENT truth only: when a fact changes, replace the old value instead of narrating the change ("previously X, changed to Y on <date>") — the dated context belongs in the `raw/` capture, not in the note.';
   // PERSONAL-BOT run: the vault is the bot's OWN memory subtree and the brain/
   // repo tools were constructed scoped to it, so this names those paths instead
   // of the root ones. The brain-migrate pointer is dropped deliberately — that
@@ -247,7 +256,7 @@ function brainSection(
   if (botRoot) {
     return (
       `**Your memory**: \`${botRoot}/wiki/\` holds your curated, durable notes and \`${botRoot}/raw/\` your unprocessed captures — your OWN namespace inside the owner's knowledge repository, never their second brain. Use \`mcp__brain__search\` to recall what you already know BEFORE answering from memory or asking the user to repeat themselves; \`mcp__brain__get_note\` reads one note in full. ` +
-      `To capture something durable, write it under \`${botRoot}/wiki/\` (or \`${botRoot}/raw/\` for a rough capture) with \`mcp__repo__write_file\` and push it with \`mcp__repo__commit\` — an uncommitted note is not persisted. An empty search result is normal early on: this memory is what YOU accumulate.`
+      `To capture something durable, write it under \`${botRoot}/wiki/\` (or \`${botRoot}/raw/\` for a rough capture) with \`mcp__repo__write_file\` and push it with \`mcp__repo__commit\` — an uncommitted note is not persisted.${currentTruth} An empty search result is normal early on: this memory is what YOU accumulate.`
     );
   }
   const base =
@@ -263,11 +272,13 @@ function brainSection(
     // On a shared (communal) account the teammate's writes go through the same
     // repo-write tools the capture skills use, so capture is open to them too.
     return request.sharedAccount
-      ? `${base} This avatar is a shared (communal) account, so you may also capture on this teammate's behalf: record a durable fact or decision with the **brain-ingest** skill. Brain edits are not pushed until you commit.${migrate}`
+      ? `${base} This avatar is a shared (communal) account, so you may also capture on this teammate's behalf: record a durable fact or decision with the **brain-ingest** skill.${currentTruth} Brain edits are not pushed until you commit.${migrate}`
       : `${base} (You can search the owner's second brain; capturing or editing notes is owner-only.)${migrate}`;
   }
   const capture =
-    " To capture a durable fact or decision use the **brain-ingest** skill; to consolidate `raw/` into clean `wiki/` notes use **brain-reflect**; to audit the vault use **brain-lint**. Brain edits are not pushed until you commit.";
+    " To capture a durable fact or decision use the **brain-ingest** skill; to consolidate `raw/` into clean `wiki/` notes use **brain-reflect**; to audit the vault use **brain-lint**." +
+    currentTruth +
+    " Brain edits are not pushed until you commit.";
   const conv =
     mode === "routine" && mcpToolGroupEnabled(request, "system")
       ? " For a consolidation task you may review the owner's OWN recent conversations with `mcp__system__list_recent_conversations`/`read_conversation` (owner-scoped) to find durable facts to capture; never read anyone else's conversations."

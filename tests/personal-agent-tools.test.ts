@@ -2047,6 +2047,8 @@ describe("personal-agent prompt branch", () => {
     expect(p).not.toContain("brain-reflect");
     // No root-vault paths: the owner's own vault is not this bot's.
     expect(p).not.toContain("**Second brain**: your knowledge repository is a vault");
+    // The bot writes its own wiki/, so the current-truth convention applies.
+    expect(p).toContain("states the CURRENT truth only");
   });
 
   it("never speaks a persona the bot does not have", () => {

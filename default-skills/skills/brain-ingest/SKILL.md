@@ -28,5 +28,11 @@ not actually say. Never invent facts.
 2. One idea per file when practical, so brain-reflect can consolidate cleanly. When the capture
    names an entity/concept that likely has a `wiki/` note, reference it inline as `[[Note Title]]`
    so brain-reflect (and the knowledge graph) can connect it later.
-3. **Always commit** after writing — an uncommitted write is not persisted.
-4. Confirm briefly what you captured and where.
+3. **`raw/` is where the dated context belongs — not the `wiki/` note.** If the capture changes a
+   fact a `wiki/` note already states (a new value, a reversed decision) and you update that note
+   now, REPLACE the old value so the note states the current truth only. Never add "previously X,
+   changed to Y on <date>" / "기존 … 였으나 … 로 변경" narrative to a `wiki/` note: the `raw/` file
+   you just wrote carries the date and the old context, and brain-lint deletes such narrative on
+   sight.
+4. **Always commit** after writing — an uncommitted write is not persisted.
+5. Confirm briefly what you captured and where.

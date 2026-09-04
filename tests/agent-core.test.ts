@@ -959,6 +959,40 @@ describe("loadDefaultPluginRoots", () => {
       "It reads ONLY raw/ and wiki/ — never conversations",
     );
   });
+
+  it("pins the current-truth rule: lint removes change narrative, reflect/ingest never write it", () => {
+    // Prose pins: collapse whitespace so a re-wrapped line never breaks a phrase.
+    const skill = (name: string) =>
+      fs
+        .readFileSync(
+          path.join(process.cwd(), "default-skills", "skills", name, "SKILL.md"),
+          "utf8",
+        )
+        .replace(/\s+/g, " ");
+    const lint = skill("brain-lint");
+    // wiki/ notes state the CURRENT truth; "previously X, changed to Y on <date>"
+    // narrative is lint-removable noise, not substantive content.
+    expect(lint).toContain("**History noise**");
+    expect(lint).toContain("states the CURRENT truth only");
+    // The original-capture archive is never a lint target, and removed history is
+    // not relocated into the reflect log — raw/ + git history already keep it.
+    expect(lint).toContain("`raw/` is read-only for this skill");
+    expect(lint).toContain("Do NOT relocate removed history");
+    // Trimming a passage is a snippet edit, never a whole-file rewrite.
+    expect(lint).toContain("`mcp__repo__edit_file`");
+    expect(lint).toContain("never use it to trim a passage");
+
+    // The WRITE side carries the same rule, so lint is not forever cleaning up
+    // after reflect/ingest: an UPDATE replaces the value, and the change goes to
+    // the reflect log (the only history that belongs in wiki/) — or stays in raw/.
+    const reflect = skill("brain-reflect");
+    expect(reflect).toContain("A note states the CURRENT truth only");
+    expect(reflect).toContain("REPLACE the old value with the new one");
+    expect(reflect).toContain("that log is the ONLY place history belongs in");
+    const ingest = skill("brain-ingest");
+    expect(ingest).toContain("`raw/` is where the dated context belongs");
+    expect(ingest).toContain("states the current truth only");
+  });
 });
 
 describe("loadAgentPluginRoots", () => {
@@ -3187,6 +3221,7 @@ describe("buildPrompt", () => {
     expect(p).toContain("Recall is read-only in this consultation");
     expect(p).not.toContain("you may also capture");
     expect(p).not.toContain("brain-ingest");
+    expect(p).not.toContain("states the CURRENT truth only");
     // NOT the routine framing (which would claim owner-level permissions)...
     expect(p).not.toContain("scheduled routine task");
     // ...and no self-referential consultation guidance (the depth guard).
@@ -3274,6 +3309,9 @@ describe("buildPrompt", () => {
     expect(p).toContain("mcp__brain__search");
     expect(p).toContain("brain-ingest");
     expect(p).toContain("brain-migrate");
+    // Write-side convention rides the per-turn prompt so direct write_file
+    // edits (outside the brain-* skills) follow it too.
+    expect(p).toContain("states the CURRENT truth only");
   });
 
   it("omits the second-brain trigger when no knowledge repo is connected", () => {
@@ -3303,6 +3341,8 @@ describe("buildPrompt", () => {
     );
     expect(p).toContain("mcp__brain__search");
     expect(p).toContain("owner-only"); // capture/edit stays owner-only
+    // A run that cannot write a note is not told how to write one.
+    expect(p).not.toContain("states the CURRENT truth only");
   });
 
   it("surfaces the group team-brain trigger when a group has a shared repo", () => {
@@ -3916,6 +3956,9 @@ describe("buildPrompt", () => {
     );
     expect(shared).toContain("brain-ingest");
     expect(shared).not.toContain("is owner-only, so do not attempt those");
+    // The write-side convention follows the write capability, not the viewer.
+    expect(readOnly).not.toContain("states the CURRENT truth only");
+    expect(shared).toContain("states the CURRENT truth only");
   });
 
   it("tells the owner which secrets are shell-exposed (and that outputs are redacted)", () => {
