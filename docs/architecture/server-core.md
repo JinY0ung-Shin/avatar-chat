@@ -59,6 +59,12 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   per-tab component (`SettingsProfileTab`/`SettingsAccessTab`/`SettingsKnowledgeTab`;
   `SettingsView.svelte` is just the tab shell)). A NEW table goes in the always-run schema `db.exec()`
   block (`CREATE TABLE IF NOT EXISTS`) — `addColumnIfMissing` is ONLY for adding a column to an existing table.
+- **Per-SECRET settings are the exception to that pattern:** they hang off `user_secrets`, not `users`,
+  and go through `PATCH /api/me/secrets/:name` rather than `PATCH /api/me` — the value column stays
+  write-only, so the toggle rides the same row (`shell_expose`; `browser_expose`/`browser_hosts`/
+  `browser_password_only`). They still surface on `User` (`shellExposedSecretNames`, `browserSecrets`)
+  via `toUser`, and a security-relevant one gets its own audit action. Detail →
+  [`secrets-ssh.md`](secrets-ssh.md).
 - **Per-conversation group-knowledge toggle (owner-only):** `conversations.group_knowledge_off` (JSON
   OFF-set; NULL/`[]` = every group ON) + `get/setConversationGroupKnowledgeOff`. The CLIENT owns the
   selection and sends it on each chat POST (`groupKnowledgeOff`) — there is NO per-conversation PATCH

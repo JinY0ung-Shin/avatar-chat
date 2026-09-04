@@ -60,6 +60,7 @@ function userOf(over: Partial<User> = {}): User {
     allowedMcpToolGroups: null,
     secretNames: [],
     shellExposedSecretNames: [],
+    browserSecrets: [],
     sshPublicKey: null,
     groups: [],
     experimentalFeatures: [],

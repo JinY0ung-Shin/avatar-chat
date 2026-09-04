@@ -20,6 +20,7 @@ import {
   MAX_SHARED_SCREENSHOTS_PER_MESSAGE,
 } from "../src/server/chatFiles.js";
 import { MAX_CHAT_IMAGES_PER_MESSAGE } from "../src/server/chatImages.js";
+import { getActiveRunForConversation } from "../src/server/agent/runRegistry.js";
 
 // Shared control surface for the mocked agent layer. `impl`, when set, fully
 // drives a turn (fires the events callbacks the route wires); otherwise a default
@@ -1383,6 +1384,112 @@ describe("browser-bridge relay (onBrowser)", () => {
     expect(audit.detail).toContain("url=https://intranet.example.com/wiki/page");
     expect(audit.detail).not.toContain("hunter2");
     expect(audit.detail).not.toContain("token=abc123");
+  }, LIVE);
+
+  it("relays a stored secret on its OWN fields, keeps the frame out of replay, and redacts the reply", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "bridgesecret").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    const PW = "hunter2-corp-secret";
+    const results: BrowserResult[] = [];
+    // Replay-buffer size at three points of the turn. A parked op costs ONE
+    // `prompt_resolved` frame on top of its own `browser` frame, so a normal op
+    // adds two and a secret-carrying one adds only the resolve.
+    const eventCounts: number[] = [];
+    const countNow = () => getActiveRunForConversation(ownerId, "conv-secret")!.eventCount;
+    H.impl = async (_req, _pr, config, _store, events) => {
+      eventCounts.push(countNow());
+      results.push(
+        await events.onBrowser!({
+          op: "type",
+          uid: "e1",
+          secret: { name: "LOGIN_PW", hosts: ["jira.corp.com"], passwordOnly: true },
+          secretText: PW,
+          submit: true,
+        }),
+      );
+      eventCounts.push(countNow());
+      results.push(await events.onBrowser!({ op: "click", uid: "e2" }));
+      eventCounts.push(countNow());
+      results.push(
+        await events.onBrowser!({
+          op: "fill_form",
+          fields: [
+            { uid: "f1", value: "j.kim" },
+            {
+              uid: "f2",
+              value: "",
+              secret: { name: "LOGIN_PW", hosts: ["jira.corp.com"], passwordOnly: true },
+              secretValue: PW,
+            },
+          ],
+        }),
+      );
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "ok" };
+    };
+
+    const { relayed } = await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-secret", message: "로그인" },
+      () => ({
+        ok: true,
+        url: "https://jira.corp.com/login",
+        title: "로그인",
+        // A page that echoed the typed value straight back into its own DOM.
+        snapshot: `[e1] textbox = "${PW}"`,
+        note: `Secret entered; the field reads "${PW}".`,
+      }),
+    );
+
+    // The policy and the plaintext ride their own fields; `text` stays null so
+    // an extension that predates secret input types nothing.
+    expect(relayed[0]).toMatchObject({
+      op: "type",
+      uid: "e1",
+      secret: { name: "LOGIN_PW", hosts: ["jira.corp.com"], passwordOnly: true },
+      secretText: PW,
+      text: null,
+    });
+    expect(relayed[2]).toMatchObject({
+      op: "fill_form",
+      fields: [
+        { uid: "f1", value: "j.kim" },
+        { uid: "f2", value: "", secret: { name: "LOGIN_PW" }, secretValue: PW },
+      ],
+      secret: null,
+      secretText: null,
+    });
+
+    // Replay buffer: the secret frame is NOT kept (+1 for its prompt_resolved),
+    // the plain click IS (+2).
+    expect(eventCounts[1] - eventCounts[0]).toBe(1);
+    expect(eventCounts[2] - eventCounts[1]).toBe(2);
+
+    // The extension's reply is redacted BEFORE the tool result is built, so the
+    // page's echo of the password never reaches the model turn.
+    const typed = results[0];
+    expect(typed.behavior).toBe("ok");
+    if (typed.behavior !== "ok") return;
+    expect(typed.snapshot).not.toContain(PW);
+    expect(typed.snapshot).toContain("[REDACTED:LOGIN_PW]");
+    expect(typed.note).not.toContain(PW);
+    expect(typed.note).toContain("[REDACTED:LOGIN_PW]");
+
+    // Audit rows carry the NAME only — never the value, and never the text.
+    const rows = store.listAudit(ownerId, true);
+    const typeRow = rows.find((e) => e.action === "browser_type")!;
+    expect(typeRow.detail).toContain("secret=LOGIN_PW");
+    expect(typeRow.detail).not.toContain(PW);
+    const fillRow = rows.find((e) => e.action === "browser_fill_form")!;
+    expect(fillRow.detail).toContain("secrets=[LOGIN_PW]");
+    expect(fillRow.detail).toContain("fields=2");
+    expect(fillRow.detail).not.toContain(PW);
+    // The plain op is untouched by any of this.
+    expect(rows.find((e) => e.action === "browser_click")!.detail).not.toContain("secret");
   }, LIVE);
 
   it("read_cookies relays, returns the cookies to the tool, and audits by NAME + count never value", async () => {

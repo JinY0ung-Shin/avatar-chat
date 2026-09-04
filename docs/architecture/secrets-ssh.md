@@ -43,6 +43,37 @@
   CLI-spawned server, non-owned lifted MCP servers get the shell-exposed names BLANKED
   (`liftPluginMcpServers` `maskEnvNames`). Reserved git/SSH names live in `secretPolicy.ts` (leaf module,
   shared with the client; a unit test pins it to the gitCredentials constants).
+- **Per-secret BROWSER INPUT (브라우저 입력, opt-in):** the second per-secret exposure toggle, and the only
+  one whose value leaves the server — the avatar names a secret and the extension types it into the
+  owner's OWN browser, so the MODEL never sees the value. Storage rides the secret row:
+  `user_secrets.browser_expose` (0 default), `browser_hosts` (JSON array of exact lowercase hostnames,
+  NULL when unset) and `browser_password_only` (1 default) — all three added by `addColumnIfMissing`
+  next to `shell_expose`, so an EXISTING deployment picks them up on the next boot. Read back through
+  `store.listBrowserSecretPolicies` → `User.browserSecrets` (a REQUIRED `BrowserSecretPolicy[]`, filled
+  in `toUser`) and `OwnerState.browserSecrets` (the metacognition sync point — both surfaces branch on
+  it). **The read FAILS CLOSED**: a row is listed only when it is enabled, its name is not reserved
+  (`isBrowserExposableSecret` — same line shell exposure draws, and defence in depth against a
+  hand-edited DB), and its hosts parse to a non-empty list; malformed JSON, a wildcard, or an empty
+  allowlist skips the row rather than advertising a secret the bridge would always refuse. Legacy/NULL
+  `browser_password_only` reads as the SAFE end (password fields only).
+- **Browser-input policy writes:** `PATCH /api/me/secrets/:name` now carries `{shellExpose?, browser?}`
+  and needs at least one; `browser` is `{enabled, hosts?, passwordOnly?}`. Hosts normalize
+  all-or-nothing through `normalizeBrowserSecretHosts` (a silently dropped typo would leave the owner
+  believing a site is allowed), enabling requires ≥1 valid host, `MAX_BROWSER_SECRET_HOSTS` = 20, and
+  `passwordOnly` defaults to true. Disabling KEEPS the stored hosts/flag (`setSecretBrowserPolicy` only
+  flips `browser_expose`) so re-enabling restores the owner's configuration. The whole body validates
+  before either toggle is written — a half-applied request would leave the two exposures in a state
+  nobody asked for. Audited as `secret_browser_expose` by NAME + hosts only
+  (`enabled secret LOGIN_PW for browser input on [jira.corp.com] (password fields only)` /
+  `disabled browser input for secret LOGIN_PW`), never a value.
+- **Where a browser-input VALUE actually flows:** server-resolved from the vault → a TRANSIENT SSE
+  `browser` frame (written to live clients, never pushed into the run's replay buffer) on a NEW field
+  (`secretText` / per-field `secretValue`, never `text`/`value`, so a pre-0.28.0 extension types
+  nothing) → the client relay → the extension's `Input.insertText`. The host allowlist is re-checked at
+  BOTH ends and the extension additionally enforces the password-field shape plus a per-(site, secret)
+  consent popup the server cannot bypass; the reply is redacted server-side and the value joins the
+  PostToolUse redaction set, so any later echo comes back `[REDACTED:<NAME>]`. Wire/extension mechanics
+  → [`browser-bridge/contract.md`](browser-bridge/contract.md) + [`actions.md`](browser-bridge/actions.md).
 - **⚠️ MCP secret TRANSPORT is a one-shot file + wrapper, NEVER the server definition.** The SDK
   serializes `options.mcpServers` into the CLI's `--mcp-config` ARGV, and argv is world-readable via
   `/proc/<pid>/cmdline` — the agent's own Bash is a child of that CLI (`cat /proc/$PPID/cmdline`). So

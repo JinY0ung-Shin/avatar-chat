@@ -349,6 +349,21 @@ export interface BrowserRequest {
   toY?: number;
   /** type: the literal text to enter. wait_for: text that must appear. */
   text?: string;
+  /**
+   * type only: enter a STORED SECRET (the owner's vault) instead of `text`. This
+   * is the POLICY, not the value — the extension re-checks it at the keyboard
+   * (host match, password-field shape, consent popup) because the server's own
+   * host pre-check reads the LAST url the bridge reported, which can be stale.
+   */
+  secret?: { name: string; hosts: string[]; passwordOnly: boolean };
+  /**
+   * type only: the secret's plaintext, resolved server-side. Deliberately NOT
+   * `text`: an extension build that predates secret input reads no `secretText`
+   * and types NOTHING (a harmless no-op) instead of typing a credential with
+   * none of the guards this field implies. Never logged, never audited, never
+   * pushed to the run's replay buffer (the SSE frame carrying it is transient).
+   */
+  secretText?: string;
   /** type only: press Enter afterwards. */
   submit?: boolean;
   /** type only: replace the field's existing content instead of inserting into it. */
@@ -375,8 +390,18 @@ export interface BrowserRequest {
   timeoutS?: number;
   /** select_tab/close_tab: a tab id from a previous list_tabs. */
   tabId?: string;
-  /** fill_form only: fields to fill, in order. `clear` replaces existing content. */
-  fields?: { uid: string; value: string; clear?: boolean }[];
+  /**
+   * fill_form only: fields to fill, in order. `clear` replaces existing content.
+   * A SECRET field carries `value: ""` plus `secret`/`secretValue` — the per-field
+   * twins of `secret`/`secretText` above, with the same degrade story.
+   */
+  fields?: {
+    uid: string;
+    value: string;
+    clear?: boolean;
+    secret?: { name: string; hosts: string[]; passwordOnly: boolean };
+    secretValue?: string;
+  }[];
   /** select_option only: the option's label exactly as the latest snapshot shows it. */
   option?: string;
   /** screenshot only: capture the whole page height instead of the viewport. */

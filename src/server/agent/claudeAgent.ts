@@ -278,6 +278,10 @@ export async function runClaudeAgent(
     shellExposedSecretNames: ownerToolAccess
       ? ownerState.shellExposedSecretNames
       : [],
+    // Secrets the owner enabled for BROWSER INPUT. Same owner gate as the two
+    // above; the browser paragraph only renders when the bridge is actually on,
+    // so a run without it never advertises names it could not type.
+    browserSecrets: ownerToolAccess ? ownerState.browserSecrets : [],
     knowledgeRepoConfigured,
     // Shared-account self-state rides on EVERY viewer class (it is not a secret):
     // the teammate branch switches its repo guidance to "writes allowed" on it,

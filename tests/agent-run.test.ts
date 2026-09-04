@@ -1166,6 +1166,62 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     expect(fs.readdirSync(secretsDir).length).toBeGreaterThan(0);
   });
 
+  it("registers the redaction hook for a BROWSER-typeable secret, and only for the opted-in names", async () => {
+    // Browser input is its own exposure path: the value reaches the user's
+    // browser, so it must be redactable from every OTHER tool output for the
+    // rest of the turn. Without this the run would register no PostToolUse hook
+    // at all (no shell exposure, no plugin server) and a page echoing the
+    // password back would print it in the next snapshot.
+    const { config, store, baseRequest, owner } = setup();
+    store.setUserSecret(owner.id, "LOGIN_PW", "hunter2-corp-secret");
+    store.setUserSecret(owner.id, "OTHER_KEY", "unrelated-vault-value");
+    store.setSecretBrowserPolicy(owner.id, "LOGIN_PW", {
+      enabled: true,
+      hosts: ["jira.corp.com"],
+      passwordOnly: true,
+    });
+    const events = makeEvents({ onBrowser: vi.fn() });
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    await runAgentStream(baseRequest, [], config, store, events);
+
+    const { options } = sdkMock.calls[0];
+    const hooks = options.hooks as {
+      PostToolUse?: { hooks: ((input: unknown) => Promise<unknown>)[] }[];
+    };
+    expect(hooks.PostToolUse?.length).toBe(1);
+    const hook = hooks.PostToolUse![0].hooks[0];
+    const leaked = (await hook({
+      tool_response: { stdout: "log line: hunter2-corp-secret / unrelated-vault-value" },
+    })) as { hookSpecificOutput?: { updatedToolOutput?: { stdout: string } } };
+    const out = leaked.hookSpecificOutput!.updatedToolOutput!.stdout;
+    expect(out).toContain("[REDACTED:LOGIN_PW]");
+    expect(out).not.toContain("hunter2-corp-secret");
+    // A vault secret the owner did NOT opt into browser input stays out of the
+    // redaction set: this run exposes it nowhere, and redacting it would only
+    // shred unrelated output.
+    expect(out).toContain("unrelated-vault-value");
+  });
+
+  it("registers no redaction hook for a browser secret when the bridge is not in this run", async () => {
+    // The policy exists, but with no browser sink there is nothing to type it
+    // into — so nothing is exposed and nothing needs redacting.
+    const { config, store, baseRequest, owner } = setup();
+    store.setUserSecret(owner.id, "LOGIN_PW", "hunter2-corp-secret");
+    store.setSecretBrowserPolicy(owner.id, "LOGIN_PW", {
+      enabled: true,
+      hosts: ["jira.corp.com"],
+      passwordOnly: true,
+    });
+    const events = makeEvents();
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    await runAgentStream(baseRequest, [], config, store, events);
+
+    const hooks = sdkMock.calls[0].options.hooks as { PostToolUse?: unknown[] };
+    expect(hooks.PostToolUse).toBeUndefined();
+  });
+
   it("sweeps stale one-shot MCP secret files older than the max age", async () => {
     const { config, store, baseRequest } = setup();
     const secretsDir = path.join(config.dataDir, "runtime", "mcp-secrets");
@@ -1337,6 +1393,28 @@ describe("runRegistry (additional coverage)", () => {
     expect(replayed).toContain("second");
     expect(replayed).not.toContain("first");
     closeRun("rp-1");
+  });
+
+  it("emitRunEvent with replay:false reaches live clients but is never replayed", () => {
+    // The frame carrying a stored secret's plaintext must not sit in the run's
+    // replay buffer, where a reconnect would re-send it verbatim.
+    openRun("tr-1", "u");
+    const live = makeSseSink();
+    attachRunClient("tr-1", "u", live.res);
+    expect(emitRunEvent("tr-1", "browser", { op: "type", secretText: "hunter2" }, { replay: false })).toBe(
+      true,
+    );
+    emitRunEvent("tr-1", "status", { label: "after" });
+    expect(live.chunks.join("")).toContain("hunter2"); // the live client DID get it
+    // A client attaching afterwards is caught up on everything BUT that frame,
+    // and the id it consumed is still spent, so the cursor stays monotonic.
+    const late = makeSseSink();
+    attachRunClient("tr-1", "u", late.res, 0);
+    const replayed = late.chunks.join("");
+    expect(replayed).not.toContain("hunter2");
+    expect(replayed).toContain("after");
+    expect(replayed).toContain("id: 2");
+    closeRun("tr-1");
   });
 
   it("getActiveRunForConversation clears a stale conversation→run mapping", () => {

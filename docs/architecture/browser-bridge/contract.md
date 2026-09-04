@@ -11,6 +11,29 @@
   `systemTools.describe_system`), the Korean progress label in client `lib/chat.ts`, and the tool-group
   description in `shared/mcpToolGroups.ts`. A field missed in the relay arrives `undefined` at the
   extension with no error anywhere.
+- **0.28.0's stored-secret input adds THREE wire fields, and the floor still stays 0.6.0 — because the
+  value rides a field an old build cannot see.** `type` gains `secret` (the policy: name + allowed hosts
+  + `passwordOnly`) and `secretText` (the plaintext); a `fill_form` field gains the same pair as
+  `secret`/`secretValue` alongside `value: ""`. The value is deliberately NOT put in `text`: an extension
+  that predates the feature reads `text`, finds nothing, and types NOTHING — a harmless no-op — instead
+  of typing a credential with none of the guards the `secret` object implies (host re-check, password
+  shape, consent popup). That is the whole reason the field is new rather than reused, and it is why the
+  floor does not move. `BrowserResult`/`BridgeReply` gain nothing. The DEGRADE is covered on the client
+  side instead of by the floor: `browserBridge.ts` exports `SECRET_INPUT_MIN_EXTENSION_VERSION`
+  (`0.28.0`) + `extensionSupportsSecretInput`, and `handleBrowserOp` probes the installed version before
+  forwarding any op that carries a `secret` — on an older build it answers the server `ok:false` with an
+  update prompt and never forwards `secretText`/`secretValue` at all, so the plaintext does not even
+  reach the extension process.
+- **The frame carrying a secret is TRANSIENT.** `emitRunEvent(runId, event, data, { replay: false })`
+  writes to the live clients but does not push the frame into `run.events`; `routes/chat.ts` passes it
+  for any `browser` frame whose `secretText` is set or whose `fields` carry a `secretValue`. Without it
+  the plaintext would sit in the run's in-memory replay buffer for the rest of the turn and be re-sent
+  verbatim to every reconnecting client. The frame still CONSUMES an event id, so ids stay monotonic and
+  a reconnect's `sinceEventId` cursor can never be made to re-request it. The reply direction is covered
+  separately: the route runs `redactSecretValues(reply, {NAME: value})` BEFORE anything reads the reply
+  (audit row, size gates, tool result), so a page that echoed the typed value back into its own DOM
+  cannot carry it into the model turn — and the audit row records `secret=NAME` / `secrets=[…]` only,
+  never a value and never `text`. Guards and the extension half → `actions.md`.
 - **`BROWSER_EXTENSION_MIN_COMPATIBLE` (`browserExtensionBundle.ts`) is a REINSTALL order** — raise it
   only when the op contract breaks. Below it every install badges orange (`outdated`) in the composer.
   `tests/infra.test.ts` pins it at or below the bundled manifest version: above it, even a

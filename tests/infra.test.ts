@@ -1163,6 +1163,44 @@ describe("browser extension bundle", () => {
     }
   });
 
+  it("never asks for a secret-capable build newer than the one it ships", () => {
+    // The client refuses to relay a stored secret to an extension older than
+    // SECRET_INPUT_MIN_EXTENSION_VERSION and tells the user to update. Above the
+    // bundled version that instruction is unfollowable: the download IS the
+    // bundle, so the user updates and the secret still never gets typed. Same
+    // failure shape as the min-compatible ceiling above, different lever.
+    //
+    // Read out of the client source rather than imported: this file compiles
+    // under the ROOT tsconfig (NodeNext), which excludes src/client precisely
+    // because its extensionless imports do not resolve there. A rename or a
+    // reformat of the declaration fails this pin loudly, which is the point.
+    const clientSource = fs.readFileSync(
+      path.join(process.cwd(), "src", "client", "src", "lib", "browserBridge.ts"),
+      "utf8",
+    );
+    const declared = /export const SECRET_INPUT_MIN_EXTENSION_VERSION = "([^"]+)"/.exec(clientSource);
+    expect(declared, "browserBridge.ts must export SECRET_INPUT_MIN_EXTENSION_VERSION").toBeTruthy();
+    const SECRET_INPUT_MIN_EXTENSION_VERSION = declared![1];
+    expect(SECRET_INPUT_MIN_EXTENSION_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    const parse = (v: string) => v.split(".").map(Number);
+    const need = parse(SECRET_INPUT_MIN_EXTENSION_VERSION);
+    const bundled = parse(browserExtensionVersion()!);
+    for (let i = 0; i < Math.max(need.length, bundled.length); i += 1) {
+      const diff = (need[i] ?? 0) - (bundled[i] ?? 0);
+      if (diff !== 0) {
+        expect(
+          diff,
+          `secret-input floor ${SECRET_INPUT_MIN_EXTENSION_VERSION} exceeds bundled ${browserExtensionVersion()}`,
+        ).toBeLessThan(0);
+        break;
+      }
+    }
+    // …and the FLEET floor must not move for this feature: the value rides a new
+    // field (`secretText`), so an older build types nothing rather than
+    // mishandling the op. Raising the reinstall order would be a false alarm.
+    expect(BROWSER_EXTENSION_MIN_COMPATIBLE).toBe("0.6.0");
+  });
+
   it("ships every extension/ file except deliberate dev-only excludes", () => {
     // Field-bricking invariant: a new file under extension/ that a coder forgets
     // to add to BUNDLE_FILES silently ships an incomplete zip/install. Diff the
@@ -1209,12 +1247,15 @@ describe("browser extension bundle", () => {
     // Round-trips byte-for-byte, so deflate/CRC are right, not just parseable.
     // consent.js doubles as a regression pin: dropping the consent page from
     // BUNDLE_FILES would ship a bundle whose new_tab popup 404s. axtree.js is a
-    // harder one — background.js imports it, so losing it breaks every op.
+    // harder one — background.js imports it, so losing it breaks every op, and
+    // secretInput.js is imported the same way (a bundle without it bricks the
+    // worker, so no browser op works at all — not just secret input).
     // icon-128.png pins the BINARY path: the manifest names the icons, so a
     // bundle that mangles (or drops) them fails to load at install time.
     for (const name of [
       "background.js",
       "axtree.js",
+      "secretInput.js",
       "options.js",
       "consent.js",
       "policy-schema.json",

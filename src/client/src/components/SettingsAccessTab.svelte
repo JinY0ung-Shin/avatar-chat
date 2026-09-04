@@ -23,7 +23,11 @@
     verifyExtensionDir,
   } from "../lib/browserBridgeInstall";
   import { EXPERIMENTAL_FEATURES } from "../../../server/experimentalFeatures";
-  import { isShellExposableSecret } from "../../../server/secretPolicy";
+  import {
+    isBrowserExposableSecret,
+    isShellExposableSecret,
+    type BrowserSecretPolicy,
+  } from "../../../server/secretPolicy";
   import type { User } from "../lib/types";
 
   export let active = false;
@@ -298,6 +302,14 @@
   // per-secret agent-shell exposure toggle
   let shellExposeBusy = "";
 
+  // per-secret 브라우저 입력 (browser secret input). Turning it ON is never a
+  // one-click act: the allowed sites ARE the security policy, so the checkbox
+  // only opens the inline editor and the PATCH waits for 저장.
+  let browserFormFor = "";
+  let browserHostsDraft = "";
+  let browserPasswordOnly = true;
+  let browserBusy = "";
+
   async function toggleShellExpose(name: string, on: boolean): Promise<void> {
     if (shellExposeBusy) return;
     shellExposeBusy = name;
@@ -319,6 +331,89 @@
       shellExposeBusy = "";
     }
   }
+
+  /** Only reads its ARGUMENT, so the template call stays correct under legacy untrack. */
+  function browserSummary(policy: BrowserSecretPolicy): string {
+    const where = policy.passwordOnly ? "비밀번호 필드만" : "모든 입력 필드";
+    return `브라우저 입력: ${policy.hosts.join(", ")} · ${where}`;
+  }
+
+  /**
+   * Comma / space / newline separated hosts → a list. Deliberately NO
+   * client-side validation beyond splitting: `normalizeBrowserSecretHosts` on the
+   * server is the single set of rules, and it is all-or-nothing, so a second
+   * hand-mirrored copy here could disagree about which site is allowed.
+   */
+  function parseHostsDraft(raw: string): string[] {
+    return raw
+      .split(/[\s,]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+
+  function openBrowserForm(name: string, policy: BrowserSecretPolicy | undefined): void {
+    browserFormFor = name;
+    browserHostsDraft = (policy?.hosts || []).join(", ");
+    browserPasswordOnly = policy ? policy.passwordOnly : true;
+  }
+
+  function closeBrowserForm(): void {
+    browserFormFor = "";
+    browserHostsDraft = "";
+    browserPasswordOnly = true;
+  }
+
+  async function patchBrowserPolicy(
+    name: string,
+    browser: { enabled: boolean; hosts?: string[]; passwordOnly?: boolean },
+    okMessage: string,
+  ): Promise<void> {
+    if (browserBusy) return;
+    browserBusy = name;
+    try {
+      const { user: next } = await api<{ user: User }>(`/api/me/secrets/${encodeURIComponent(name)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ browser }),
+      });
+      replaceState({ user: next });
+      if (browserFormFor === name) closeBrowserForm();
+      notify(okMessage, "ok");
+    } catch (err) {
+      // The server owns host validation, so surface ITS text — it names the rule
+      // that was broken (invalid host, none given, over the cap, reserved name).
+      notify(`브라우저 입력 설정 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      browserBusy = "";
+    }
+  }
+
+  function saveBrowserPolicy(name: string): void {
+    void patchBrowserPolicy(
+      name,
+      { enabled: true, hosts: parseHostsDraft(browserHostsDraft), passwordOnly: browserPasswordOnly },
+      `${name} 시크릿을 지정한 사이트에서 브라우저 입력에 사용합니다.`,
+    );
+  }
+
+  function toggleBrowserInput(
+    name: string,
+    on: boolean,
+    policy: BrowserSecretPolicy | undefined,
+  ): void {
+    if (on) {
+      openBrowserForm(name, policy);
+      return;
+    }
+    // Unticking while the editor is open for a NEVER-enabled secret is a cancel,
+    // not a disable: the box was only ticked to open the form, there is nothing
+    // on the server to turn off, and "껐습니다" for something that was never on
+    // tells the owner their vault changed when it did not.
+    if (!policy) {
+      if (browserFormFor === name) closeBrowserForm();
+      return;
+    }
+    void patchBrowserPolicy(name, { enabled: false }, `${name} 시크릿의 브라우저 입력을 껐습니다.`);
+  }
   const identityStatusId = "access-git-identity-status";
   const internalStatusId = "access-internal-token-status";
   const externalStatusId = "access-external-token-status";
@@ -328,6 +423,11 @@
   $: user = $appState.user;
   $: enabledExperimental = new Set(user?.experimentalFeatures || []);
   $: shellExposed = new Set(user?.shellExposedSecretNames || []);
+  // A MAP the template reads DIRECTLY: a helper closing over `user` would be
+  // untracked in legacy mode and render a stale policy (see client.md).
+  $: browserPolicies = new Map<string, BrowserSecretPolicy>(
+    (user?.browserSecrets || []).map((policy) => [policy.name, policy]),
+  );
   $: sshStatus = sshBusy
     ? "SSH 키를 생성하는 중입니다."
     : sshError
@@ -856,6 +956,7 @@
     <ul class="hint-list">
       <li>직접 등록한 플러그인·지식 저장소의 <code>.mcp.json</code> MCP 서버에 환경변수로 주입돼요 — 본인·같은 그룹원과의 대화에서만.</li>
       <li><strong>셸 노출</strong>을 켜면 셸(Bash)에서 같은 이름의 환경변수로도 쓸 수 있어요. 필요한 키만 켜세요.</li>
+      <li><strong>브라우저 입력</strong>을 켜면 아바타가 브라우저 확장을 통해 이 시크릿을 지정한 사이트의 로그인 필드에 이름으로 입력할 수 있어요. 값은 아바타에게 보이지 않고, 지정한 사이트 밖에서는 거부되며, 처음 입력할 때 브라우저에서 한 번 더 확인해요.</li>
       <li>도구 출력에 값이 나타나면 자동으로 가려져요.</li>
       <li>GIT_TOKEN·GITHUB_TOKEN·SSH 계열은 전용 경로로만 쓰이고, 그룹 저장소 MCP 서버·일반 사용자 대화에는 어떤 시크릿도 주입되지 않아요.</li>
     </ul>
@@ -897,8 +998,58 @@
                 <span class="muted">셸 노출</span>
               </label>
             {/if}
+            {#if isSet && isBrowserExposableSecret(preset.name)}
+              {@const browserPolicy = browserPolicies.get(preset.name)}
+              <label class="browser-input-toggle" title="켜면 아바타가 브라우저 확장을 통해 이 시크릿을 지정한 사이트의 입력 필드에 넣을 수 있습니다 (값은 아바타에게 보이지 않고, 지정한 사이트 밖에서는 거부됩니다)">
+                <input
+                  type="checkbox"
+                  checked={Boolean(browserPolicy) || browserFormFor === preset.name}
+                  disabled={browserBusy === preset.name}
+                  on:change={(event) => toggleBrowserInput(preset.name, event.currentTarget.checked, browserPolicy)}
+                />
+                <span class="muted">브라우저 입력</span>
+              </label>
+            {/if}
             <button class="primary" type="submit" disabled={presetBusy[preset.name] || !presetFilled[preset.name]}>{isSet ? "교체" : "저장"}</button>
             <button class="linkish small" type="button" disabled={!isSet || presetBusy[preset.name]} on:click={() => clearPresetSecret(preset.name, preset.label)}>삭제</button>
+            {#if isSet && isBrowserExposableSecret(preset.name)}
+              {@const browserPolicy = browserPolicies.get(preset.name)}
+              {#if browserFormFor === preset.name}
+                <div class="browser-input-box">
+                  <label class="field browser-input-hosts">
+                    <span>허용 사이트(호스트)</span>
+                    <input
+                      bind:value={browserHostsDraft}
+                      placeholder="jira.corp.com, login.corp.com"
+                      autocomplete="off"
+                      spellcheck="false"
+                      disabled={browserBusy === preset.name}
+                      on:keydown={(event) => {
+                        // Enter saves the POLICY. In a preset row this input sits
+                        // inside the <form> that saves the secret VALUE, so the
+                        // default submit has to be stopped.
+                        if (event.key !== "Enter") return;
+                        event.preventDefault();
+                        saveBrowserPolicy(preset.name);
+                      }}
+                    />
+                  </label>
+                  <label class="browser-input-toggle">
+                    <input type="checkbox" bind:checked={browserPasswordOnly} disabled={browserBusy === preset.name} />
+                    <span class="muted">비밀번호 필드에만 입력</span>
+                  </label>
+                  <div class="browser-input-actions">
+                    <button class="btn primary sm" type="button" disabled={browserBusy === preset.name} on:click={() => saveBrowserPolicy(preset.name)}>{browserBusy === preset.name ? "저장 중…" : "저장"}</button>
+                    <button class="btn sm" type="button" disabled={browserBusy === preset.name} on:click={closeBrowserForm}>취소</button>
+                  </div>
+                </div>
+              {:else if browserPolicy}
+                <div class="browser-input-box">
+                  <span class="muted browser-input-summary">{browserSummary(browserPolicy)}</span>
+                  <button class="btn sm" type="button" disabled={browserBusy === preset.name} on:click={() => openBrowserForm(preset.name, browserPolicy)}>편집</button>
+                </div>
+              {/if}
+            {/if}
           </div>
         </form>
       {/each}
@@ -950,7 +1101,57 @@
                 <span class="muted">셸 노출</span>
               </label>
             {/if}
+            {#if isBrowserExposableSecret(name)}
+              {@const browserPolicy = browserPolicies.get(name)}
+              <label class="browser-input-toggle" title="켜면 아바타가 브라우저 확장을 통해 이 시크릿을 지정한 사이트의 입력 필드에 넣을 수 있습니다 (값은 아바타에게 보이지 않고, 지정한 사이트 밖에서는 거부됩니다)">
+                <input
+                  type="checkbox"
+                  checked={Boolean(browserPolicy) || browserFormFor === name}
+                  disabled={browserBusy === name}
+                  on:change={(event) => toggleBrowserInput(name, event.currentTarget.checked, browserPolicy)}
+                />
+                <span class="muted">브라우저 입력</span>
+              </label>
+            {/if}
             <button class="linkish small" type="button" aria-label={`시크릿 삭제: ${name}`} disabled={extraDeleting[name]} on:click={() => deleteExtraSecret(name)}>삭제</button>
+            {#if isBrowserExposableSecret(name)}
+              {@const browserPolicy = browserPolicies.get(name)}
+              {#if browserFormFor === name}
+                <div class="browser-input-box">
+                  <label class="field browser-input-hosts">
+                    <span>허용 사이트(호스트)</span>
+                    <input
+                      bind:value={browserHostsDraft}
+                      placeholder="jira.corp.com, login.corp.com"
+                      autocomplete="off"
+                      spellcheck="false"
+                      disabled={browserBusy === name}
+                      on:keydown={(event) => {
+                        // Enter saves the POLICY. In a preset row this input sits
+                        // inside the <form> that saves the secret VALUE, so the
+                        // default submit has to be stopped.
+                        if (event.key !== "Enter") return;
+                        event.preventDefault();
+                        saveBrowserPolicy(name);
+                      }}
+                    />
+                  </label>
+                  <label class="browser-input-toggle">
+                    <input type="checkbox" bind:checked={browserPasswordOnly} disabled={browserBusy === name} />
+                    <span class="muted">비밀번호 필드에만 입력</span>
+                  </label>
+                  <div class="browser-input-actions">
+                    <button class="btn primary sm" type="button" disabled={browserBusy === name} on:click={() => saveBrowserPolicy(name)}>{browserBusy === name ? "저장 중…" : "저장"}</button>
+                    <button class="btn sm" type="button" disabled={browserBusy === name} on:click={closeBrowserForm}>취소</button>
+                  </div>
+                </div>
+              {:else if browserPolicy}
+                <div class="browser-input-box">
+                  <span class="muted browser-input-summary">{browserSummary(browserPolicy)}</span>
+                  <button class="btn sm" type="button" disabled={browserBusy === name} on:click={() => openBrowserForm(name, browserPolicy)}>편집</button>
+                </div>
+              {/if}
+            {/if}
           </div>
         {/each}
       {/if}
@@ -988,13 +1189,42 @@
     min-width: 0;
     overflow-wrap: anywhere;
   }
-  .shell-expose-toggle {
+  .shell-expose-toggle,
+  .browser-input-toggle {
     display: inline-flex;
     align-items: center;
     gap: var(--s-1);
     cursor: pointer;
     white-space: nowrap;
     min-height: 32px;
+  }
+  /* Takes a full line of the WRAPPING flex row it lives in (.secret-preset-actions
+     / .secret-row), so the allowed-sites editor never squeezes the row's buttons
+     onto a third line. */
+  .browser-input-box {
+    flex: 1 0 100%;
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: var(--s-2) var(--s-3);
+    margin-top: var(--s-1);
+    padding-top: var(--s-3);
+    border-top: 1px dashed var(--line-soft);
+  }
+  .browser-input-hosts {
+    flex: 1 1 240px;
+    min-width: 0;
+  }
+  .browser-input-summary {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: var(--t-xs);
+    overflow-wrap: anywhere;
+  }
+  .browser-input-actions {
+    display: flex;
+    flex: none;
+    gap: var(--s-2);
   }
   /* Composes the global `.tag accent` base; only the deltas that make it read as
      a label riding inside a <strong> heading live here. */

@@ -45,6 +45,8 @@ import {
   allowlistSeed,
   bridgeVersionVerdict,
   compareBridgeVersions,
+  extensionSupportsSecretInput,
+  SECRET_INPUT_MIN_EXTENSION_VERSION,
 } from "../src/client/src/lib/browserBridge.js";
 import { defaultAllowlistFor, patternMatchesHost } from "../src/shared/originPatterns.js";
 import {
@@ -1141,6 +1143,24 @@ describe("browser bridge versioning", () => {
     expect(bridgeVersionVerdict("0.4.0", "0.5.0", "beta")).toBe("outdated");
     // String equality precedes parsing, so odd-but-equal versions stay green.
     expect(bridgeVersionVerdict("beta", "beta", null)).toBe("current");
+  });
+
+  it("extensionSupportsSecretInput gates stored-secret typing at 0.28.0, failing toward refusal", () => {
+    expect(SECRET_INPUT_MIN_EXTENSION_VERSION).toBe("0.28.0");
+    expect(extensionSupportsSecretInput("0.28.0")).toBe(true);
+    expect(extensionSupportsSecretInput("0.28.1")).toBe(true);
+    expect(extensionSupportsSecretInput("0.29.0")).toBe(true);
+    expect(extensionSupportsSecretInput("1.0.0")).toBe(true);
+    // Just below the boundary — and a lexicographic compare would call "0.9.0"
+    // newer than "0.28.0", so this is the pin that catches a string compare.
+    expect(extensionSupportsSecretInput("0.27.9")).toBe(false);
+    expect(extensionSupportsSecretInput("0.9.0")).toBe(false);
+    // No version at all (pre-0.4.0 builds) and unparseable versions are a NO:
+    // handing a credential to a build that drops it is the worse failure.
+    expect(extensionSupportsSecretInput(undefined)).toBe(false);
+    expect(extensionSupportsSecretInput(null)).toBe(false);
+    expect(extensionSupportsSecretInput("")).toBe(false);
+    expect(extensionSupportsSecretInput("beta")).toBe(false);
   });
 
   it("extensionsPageUrl points Edge at edge://extensions, everyone else at chrome://extensions", async () => {

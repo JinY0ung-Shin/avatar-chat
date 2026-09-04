@@ -155,13 +155,33 @@ function resolvePending(runId: string, run: Run, { notify }: { notify: boolean }
   run.pending.clear();
 }
 
-export function emitRunEvent(runId: string, event: string, data: unknown): boolean {
+/**
+ * Write one SSE frame to every attached client of a run.
+ *
+ * `replay` defaults to true: the frame is also kept in `run.events` so a client
+ * that reconnects (or attaches late) is caught up from `sinceEventId`. Pass
+ * `{ replay: false }` for a frame whose payload must NOT survive the moment it
+ * is delivered — today that is a `browser` op carrying a stored secret's
+ * plaintext (`secretText` / a field's `secretValue`), which would otherwise sit
+ * in the run's in-memory replay buffer for the rest of the turn and be re-sent
+ * verbatim on every reconnect. It still CONSUMES an event id, so ids stay
+ * monotonic and a reconnecting client's `sinceEventId` cursor cannot be made to
+ * re-request it.
+ */
+export function emitRunEvent(
+  runId: string,
+  event: string,
+  data: unknown,
+  options?: { replay?: boolean },
+): boolean {
   const run = runs.get(runId);
   if (!run || run.ended) {
     return false;
   }
   const frame = { id: ++run.nextEventId, event, data };
-  run.events.push(frame);
+  if (options?.replay !== false) {
+    run.events.push(frame);
+  }
   for (const client of [...run.clients]) {
     if (!writeSse(client.res, frame.event, frame.data, frame.id)) {
       detachClient(run, client);

@@ -210,6 +210,15 @@
   chars, no value) rewrites that line to `image "음식점 <shop name>"` and is consumed — it never opens a
   run, joins a row, or mints anything (`pendingMarker`; `format()` returns `{line, uid, suffix}` so the
   rewrite cannot mint a second uid).
+- **A password field's value renders as BULLETS everywhere the snapshot can see it, and
+  `DOMSnapshot.captureSnapshot`'s `inputValue` is the one place it does not.** Chromium masks an
+  `<input type=password>` in BOTH `getFullAXTree` and `getPartialAXTree` as one `•` per character
+  (measured — `tests/visual/password-facts.spec.ts`), which is why a snapshot returned by the very op
+  that typed a stored secret carries no credential, and why the extension can verify that write by
+  LENGTH without ever holding the value as a comparable string. `captureSnapshot` is the exception: its
+  `inputValue` column carries the PLAINTEXT of every field on the page. The clickable section below
+  already ignores it (labels come from aria-label/title/alt/text), and the secret write's frame
+  attribution reads only `documentURL` — **`inputValue` must never be rendered, quoted, or logged.**
 - **A FULL snapshot also reports what the accessibility tree cannot see at all: DOM-clickable elements.**
   VOC field case: thumbnail grids built from bare `<div>`/`<canvas>` (a click listener and/or
   `cursor:pointer`, no role, no name, no tabindex) have NO accessibility-tree entry, so the walk minted no

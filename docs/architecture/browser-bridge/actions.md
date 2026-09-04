@@ -163,6 +163,42 @@
   attribute (`VIRTUALIZED_EDITOR_CLASS_RE` — Monaco / CodeMirror 5+6 / Ace; raw because CodeMirror 5's
   class is capitalized and `attrOf` lowercases) — a SIGNAL that words the unverified note, never a
   gate. Short values keep the zero-cost single-insert path byte for byte.
+- **A stored secret is typed by NAME, and every one of its five guards is load-bearing (0.28.0).** The
+  model passes `secretName` to `type` / a `fill_form` field INSTEAD of `value`; the server resolves the
+  plaintext from the owner's vault and the extension types it. So the value never enters the model
+  context, the transcript, or the audit trail — the model only ever names it. What makes that safe is a
+  chain in which each link covers a different failure:
+  (1) **Per-secret opt-in** (`user_secrets.browser_expose`/`browser_hosts`/`browser_password_only`, the
+  `브라우저 입력` toggle) with EXACT lowercase hostnames, ≥1 when enabled, and `passwordOnly` defaulting
+  to true — no wildcards, because an over-broad match is exactly how a phishing page on a sibling host
+  would collect the value. Reserved git/SSH names can never be browser-typed
+  (`isBrowserExposableSecret`).
+  (2) **Host check at BOTH ends.** The SERVER pre-checks the last url the bridge reported (tracked in
+  `buildBrowserTools`' closure off every `execute` reply — so a `navigate` away flips the answer
+  mid-turn) and refuses with the allowed sites and the current host; with no url seen yet it defers
+  rather than guessing. The EXTENSION re-checks the live tab AND, for a child frame, that frame's own
+  document — refusing when the frame url cannot be determined. The server check is the cheap one and can
+  be stale; the extension's is the authoritative one.
+  (3) **Password-shape enforcement** in the extension: with `passwordOnly`, `inputPreflight`'s DOM shape
+  must be an `<input type=password>`, refused BEFORE any key is sent.
+  (4) **Consent popup** in the extension (`requestDataConsent`-style, kind `secret`, grant key `secret`
+  in the same unified `dataConsentGrants` store cookies/storage use) — per (host, secret) per browser
+  session, un-bypassable from a server/headless path, revocable in the options page, cleared on browser
+  close.
+  (5) **Never quoted, never logged, always redacted.** No note, refusal, error, audit row, or log line may
+  contain the value. Verification of a `clear` + overtype is by LENGTH only, which is possible because
+  Chromium masks a password field's AX value as one `•` per character (measured — contract.md's table and
+  `tests/visual/password-facts.spec.ts`); a non-clear write skips the read-back entirely, and rungs B/C
+  of the clear ladder — the ones that QUOTE the survivor — never run. `DOMSnapshot.captureSnapshot`'s
+  `inputValue` DOES expose the plaintext and is why it must never be rendered (snapshots.md). On the way
+  back the chat route redacts the reply before anything reads it and the browser tools redact their own
+  result, so a page that echoed the value into its own DOM comes back `[REDACTED:<NAME>]`; the run's
+  PostToolUse hook carries the same value for every OTHER tool for the rest of the turn (agent-core.md).
+  Audit rows record `secret=NAME` / `secrets=[N1,N2]` and nothing else.
+  Refusals are all RETRY-PROOF and worded to redirect: an unknown name lists what IS enabled and the
+  settings path, a host mismatch names the allowed sites and the current host, and a declined consent is
+  reported rather than retried. The one line the tool text and both metacognition surfaces never soften:
+  one-time codes (OTP/2FA) and payment details stay off-limits — no policy covers them.
 - **Two guards run before a click, and `clickNode` itself stays UNGUARDED by design**
   (`select_option`'s option click and `focusForInput`'s fallback reuse it; the guards live in the op
   branches). (1) FILE-UPLOAD refusal: `<input type=file>` looks like any `button` in the AX tree — its

@@ -7,7 +7,14 @@ import { ensureNotificationPermission, osNotify } from "./notifications";
 import { newId, notify, readState, updateState } from "./state";
 import { isDrawioAttachment } from "./drawioViewer";
 import { formatTokenCount } from "./format";
-import { sendToExtension } from "./browserBridge";
+import {
+  extensionSupportsSecretInput,
+  readAllowedOrigins,
+  SECRET_INPUT_MIN_EXTENSION_VERSION,
+  sendToExtension,
+  type BridgeOperation,
+  type BridgeReply,
+} from "./browserBridge";
 import { resolveTypedSlashCommand } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
 import { DEFAULT_EFFORT_LEVEL } from "../../../server/effortLevels";
@@ -2157,6 +2164,56 @@ function clearLive(pane: ChatPane): void {
 // and re-executing a click would act on the page twice.
 const handledBrowserOps = new Set<string>();
 
+/**
+ * Does this op carry a stored secret's plaintext? `type` carries it whole,
+ * `fill_form` per field. The PRESENCE of the policy is the marker — never the
+ * value, which must not be touched outside the relay below.
+ */
+function opCarriesSecret(data: any): boolean {
+  if (data?.secret) return true;
+  const fields = data?.fields;
+  return Array.isArray(fields) && fields.some((field: any) => field?.secret);
+}
+
+/**
+ * Model-facing refusal for an install that predates stored-secret input. An
+ * older build does not know `secretText`/`secretValue`, so it would type
+ * NOTHING and answer as if it had succeeded — a silent no-op the run cannot
+ * distinguish from a login that worked, which is exactly why the value is
+ * withheld rather than sent hopefully.
+ */
+function secretInputUnsupportedReply(version: string | undefined): BridgeReply {
+  return {
+    ok: false,
+    message:
+      `The installed Noah browser extension (${version ? `v${version}` : "version unknown"}) predates stored-secret input ` +
+      `(needs ${SECRET_INPUT_MIN_EXTENSION_VERSION} or newer), so the secret was NOT typed. ` +
+      "Tell the user to update the extension from 설정 → 접근/보안 → 브라우저 브릿지 " +
+      "(download the zip again, replace the loaded folder's contents, press ↻ on the extension card), then retry.",
+  };
+}
+
+/**
+ * Hand the op to the extension — but for a secret-carrying op, only after the
+ * INSTALLED build has vouched for itself. Nothing in the op reports the
+ * extension version, so this probe is the only place it can be read, and it
+ * runs BEFORE the plaintext leaves this frame.
+ */
+async function relayBrowserOp(
+  operation: BridgeOperation,
+  carriesSecret: boolean,
+): Promise<BridgeReply> {
+  if (!carriesSecret) return sendToExtension(operation);
+  const probe = await readAllowedOrigins();
+  // Unreachable or erroring extension: its own reason is the true one (and is
+  // already written for the model), so don't overwrite it with a version story.
+  if (!probe.ok) return { ok: false, message: probe.message };
+  if (!extensionSupportsSecretInput(probe.version)) {
+    return secretInputUnsupportedReply(probe.version);
+  }
+  return sendToExtension(operation);
+}
+
 function handleBrowserOp(paneId: string, data: any): void {
   const requestId = String(data.requestId);
   if (handledBrowserOps.has(requestId)) return;
@@ -2190,13 +2247,20 @@ function handleBrowserOp(paneId: string, data: any): void {
     select_tab: "탭을 전환하는 중…",
     close_tab: "탭을 닫는 중…",
   };
+  // The value itself never reaches a label: only the fact that one rides along,
+  // so the user can see the avatar is entering a credential rather than text.
+  const carriesSecret = opCarriesSecret(data);
   const label =
-    data.op === "read_text" && data.expand
-      ? "페이지를 스크롤하며 본문을 읽는 중…"
-      : (BROWSER_OP_LABELS[String(data.op)] ?? "브라우저 화면을 읽는 중…");
+    carriesSecret && data.op === "type"
+      ? "브라우저에 시크릿을 입력하는 중…"
+      : carriesSecret && data.op === "fill_form"
+        ? "브라우저 폼을 채우는 중(시크릿 포함)…"
+        : data.op === "read_text" && data.expand
+          ? "페이지를 스크롤하며 본문을 읽는 중…"
+          : (BROWSER_OP_LABELS[String(data.op)] ?? "브라우저 화면을 읽는 중…");
   setStatus(paneId, label, false);
 
-  void sendToExtension({
+  const operation: BridgeOperation = {
     // The extension coalesces duplicate relays on this id: a run watched from
     // several open Noah tabs delivers this frame to EVERY tab, and the
     // handledBrowserOps dedupe above is a per-tab Set that cannot see them.
@@ -2216,6 +2280,11 @@ function handleBrowserOp(paneId: string, data: any): void {
     toXFraction: data.toXFraction,
     toYFraction: data.toYFraction,
     text: data.text,
+    // Relayed VERBATIM (whole objects, as the server sent them): the policy the
+    // extension re-enforces at the keyboard, and the plaintext it types. Both
+    // stop here — nothing downstream of this call may read them.
+    secret: data.secret,
+    secretText: data.secretText,
     submit: Boolean(data.submit),
     clear: Boolean(data.clear),
     keystrokes: Boolean(data.keystrokes),
@@ -2235,7 +2304,9 @@ function handleBrowserOp(paneId: string, data: any): void {
     offset: data.offset,
     expand: data.expand,
     maxChars: data.maxChars,
-  })
+  };
+
+  void relayBrowserOp(operation, carriesSecret)
     .then((reply) =>
       api("/api/chat/respond", {
         method: "POST",

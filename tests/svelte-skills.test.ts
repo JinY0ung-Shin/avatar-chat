@@ -31,6 +31,7 @@ const user = {
   allowedMcpToolGroups: null,
   secretNames: [],
   shellExposedSecretNames: [],
+  browserSecrets: [],
   sshPublicKey: null,
   groups: [],
   experimentalFeatures: [],

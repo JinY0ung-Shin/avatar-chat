@@ -9,6 +9,10 @@ to users' machines as a SIGNED artifact — a mistake here fails in the FIELD, n
 
 Durable constraints for this layer:
 
+- **`background.js` imports TWO pure modules at load — `axtree.js` and `secretInput.js`.** Both are on
+  `BUNDLE_FILES` and both are byte-pinned in `tests/infra.test.ts`, because a bundle missing either one
+  bricks the WORKER, not just the feature it belongs to: an MV3 module worker whose import fails never
+  registers, so every browser op dies with the extension simply unreachable.
 - **Every file that should ship MUST be listed in `BUNDLE_FILES`** (`../src/server/browserExtensionBundle.ts`).
   The bundle is an explicit allowlist, NOT a directory walk — a stray key or note dropped here never
   reaches a user, but a real new file (icon, page, script) that you forget to add silently bricks the
@@ -39,7 +43,25 @@ Durable constraints for this layer:
   gate on ONE unified per-(host, data type) consent (`dataConsentGrants`): the first read of a site+type
   each browser session prompts a popup (approving cookies never approves localStorage/sessionStorage, and
   vice versa; approval remembered in `chrome.storage.session`, revocable in the options page, cleared on
-  browser close) and is audited by KEY NAME only.
+  browser close) and is audited by KEY NAME only. **`secret` is a FOURTH grant kind in that same store
+  (0.28.0) and the only one that WRITES** — typing a stored secret into a login field. Adding a kind means
+  three places move together: `DATA_CONSENT_COPY` (background.js), the `kind=` branch in `consent.js`, and
+  `DATA_TYPE_LABELS` in `options.js` (which `grantedTypes` now enumerates, so a kind can never be
+  promptable but unrevokable).
+- **A SECRET write is a deliberately NARROWER write than an ordinary one, and the narrowing is the
+  feature.** The plaintext arrives on `secretText` / a field's `secretValue` — never `text`/`value`, so a
+  pre-0.28.0 build reads `message.text || ""` and types NOTHING; keep that property when touching the
+  branch. Then: `secretWriteRefusal` gates on tab host → FRAME host (`refDocumentUrl`; an OOPIF is
+  attributed through its OWN session because backendNodeIds are per-PROCESS — measured in
+  `tests/visual/password-facts.spec.ts`, and a root-session capture would answer with the TOP page's URL,
+  which is the allowed host) → password shape → consent, all before a single key. The popup goes LAST
+  because it names the field kind it asks about: prompting and then refusing on shape asks the user
+  about a write that could not happen, and their approval would leave a session grant behind for it. The write itself goes
+  through `writeSecretField`, NEVER `clearAndWrite`: every end state of the clearing ladder QUOTES what
+  the field landed on and rungs B/C re-enter the value twice more. Verification is a LENGTH comparison
+  against a read-back Chromium masks (`•` per character), and no note, error or throw may ever carry the
+  value. `extension/secretInput.js` holds the pure half and is not wired to the value at all —
+  `tests/browser-secret-input.test.ts` pins that structurally.
 - **A browser op is a FIVE-layer hand-synced contract** (`agent/browserTools.ts` → `agent/events.ts` →
   `routes/chat.ts` relay → client `lib/browserBridge.ts` → `background.js perform()`); nothing type-checks
   across the gap, so a field missed in the middle arrives `undefined`. `chat.ts` is the PRIMARY size bound on

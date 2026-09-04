@@ -748,6 +748,15 @@ export async function buildAgentRunPlan(
   const browserViewerAllowed = ownerToolAccess;
   const browserActive =
     browserToolsEnabled && Boolean(events?.onBrowser) && browserViewerAllowed;
+  // Stored secrets the owner opted into BROWSER INPUT. Derived here (next to the
+  // bridge gates) because three places downstream need the SAME list: the browser
+  // server's ctx, the redaction set below, and — via claudeAgent's request stamp
+  // — both metacognition surfaces. Never on a consultation run: that turn is
+  // driven by ANOTHER avatar's question, and a credential must not be typed on
+  // someone else's prompt. Empty whenever the bridge itself is off, so a run with
+  // no browser can never resolve a value.
+  const browserSecretPolicies =
+    browserActive && !consultationRun ? ownerState.browserSecrets : [];
   const brainServer = buildBrainServer(store, {
     avatarUserId: request.avatar.id,
     viewerIsOwner: ownerToolAccess,
@@ -1032,6 +1041,17 @@ export async function buildAgentRunPlan(
         // The paste shortcut differs by OS; the wording follows the browser
         // that is actually being driven.
         viewerPlatform: request.viewerPlatform,
+        // Browser secret input: the model names a secret, the tools resolve the
+        // value HERE and put it on the wire, so the plaintext never enters the
+        // model context. `value` is deferred on purpose — injectableSecretEnv is
+        // built further down, and the callback only runs at tool-call time.
+        browserSecrets:
+          browserSecretPolicies.length > 0
+            ? {
+                policies: browserSecretPolicies,
+                value: (name: string) => injectableSecretEnv[name],
+              }
+            : undefined,
         // copy_image: resolve the path in the SAME working roots show_file uses
         // (shared readWorkspaceImage — one copy of the containment discipline),
         // then hold the bytes for the Noah-served staging page. Wired only when
@@ -1150,6 +1170,19 @@ export async function buildAgentRunPlan(
       if (value !== undefined) {
         shellSecretEnv[name] = value;
       }
+    }
+  }
+  // Browser-typed secrets reach a process too — the user's own browser — so
+  // their values join the PostToolUse redaction set. Without this a run whose
+  // ONLY secret exposure is browser input would register no hook at all, and a
+  // page echoing the password back into its DOM would print it in the next
+  // snapshot. The browser tools redact their own reply; this covers every OTHER
+  // tool output for the rest of the turn.
+  const browserSecretEnv: Record<string, string> = {};
+  for (const policy of browserSecretPolicies) {
+    const value = injectableSecretEnv[policy.name];
+    if (value !== undefined) {
+      browserSecretEnv[policy.name] = value;
     }
   }
   // Plugin-defined MCP servers (each root's `.mcp.json`): the APP registers
@@ -1503,10 +1536,14 @@ export async function buildAgentRunPlan(
     // Redaction set: every injectable value that can actually reach a process
     // this run (shell-exposed env and/or the plugin-MCP wrapper files). Tool
     // outputs echoing one of these come back `[REDACTED:<NAME>]`.
+    // The broad exposures (shell env / plugin-MCP wrapper files) hand the WHOLE
+    // injectable vault to a process, so everything in it is redactable; browser
+    // input exposes only the individually opted-in names, and its set is a
+    // subset of the broad one, so this reads as a merge either way.
     const redactSecretEnv =
       Object.keys(shellSecretEnv).length > 0 || lifted.secretFiles.length > 0
         ? injectableSecretEnv
-        : {};
+        : browserSecretEnv;
     options.hooks = {
       PreToolUse: [
         {

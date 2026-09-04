@@ -6,6 +6,7 @@ import logger from "../logger.js";
 // A LEAF module by design (see its header): the memory-dir name is computed both
 // here (migrate/backfill) and in the personal-agents mixin's INSERT.
 import { personalAgentMemoryDirName } from "../personalAgentSlug.js";
+import type { BrowserSecretPolicy } from "../secretPolicy.js";
 import type {
   AppConfig,
   AvatarVisibility,
@@ -760,6 +761,17 @@ export class StoreBase {
     // outputs by the PostToolUse hook). OFF by default; reserved git/SSH names
     // never ship regardless (secretPolicy.ts).
     this.addColumnIfMissing("user_secrets", "shell_expose", "INTEGER DEFAULT 0");
+    // Per-secret BROWSER-INPUT opt-in (브라우저 입력): when 1, the avatar may name
+    // this secret (`secretName`) in `mcp__browser__type` / `fill_form` and the
+    // extension types the value into the owner's own browser — the model never
+    // sees it. `browser_hosts` is a JSON array of exact lowercase hostnames the
+    // secret may be typed on (NULL/[] = nowhere, so the flag alone grants
+    // nothing); `browser_password_only` restricts it to an `<input
+    // type=password>`. OFF by default; reserved git/SSH names never qualify
+    // (secretPolicy.ts), same line as shell exposure.
+    this.addColumnIfMissing("user_secrets", "browser_expose", "INTEGER DEFAULT 0");
+    this.addColumnIfMissing("user_secrets", "browser_hosts", "TEXT");
+    this.addColumnIfMissing("user_secrets", "browser_password_only", "INTEGER DEFAULT 1");
     // When the user dismissed first-run onboarding (ISO timestamp); NULL = not yet.
     // Server-persisted so the welcome modal shows ONCE per account instead of every
     // login (the old localStorage flag re-fired on each new browser / cleared store).
@@ -1261,6 +1273,12 @@ export interface StoreBase {
   rolesFor(userId: string): string[];
   listUserSecretNames(userId: string): string[];
   listShellExposedSecretNames(userId: string): string[];
+  listBrowserSecretPolicies(userId: string): BrowserSecretPolicy[];
+  setSecretBrowserPolicy(
+    userId: string,
+    name: string,
+    policy: { enabled: boolean; hosts: string[]; passwordOnly: boolean },
+  ): boolean;
   listUserGroups(userId: string): UserGroupMembership[];
   allowedMcpToolGroupsForUser(userId: string): McpToolGroupId[] | null;
   touchConversation(

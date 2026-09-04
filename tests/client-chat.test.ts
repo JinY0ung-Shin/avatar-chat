@@ -228,9 +228,16 @@ function useOsNotifications(): OsNote[] {
   return notes;
 }
 
-/** Stand in for the Noah extension: `chrome.runtime` is the only channel to it. */
-function useExtension(reply: unknown) {
-  const send = vi.fn((_extensionId: string, _message: unknown, cb: (response: unknown) => void) => cb(reply));
+/**
+ * Stand in for the Noah extension: `chrome.runtime` is the only channel to it.
+ * Pass a function to answer per message — a secret op probes `getAllowedOrigins`
+ * for the installed version before the op itself is sent.
+ */
+function useExtension(reply: unknown | ((message: any) => unknown)) {
+  const answer = typeof reply === "function" ? (reply as (message: any) => unknown) : () => reply;
+  const send = vi.fn((_extensionId: string, message: unknown, cb: (response: unknown) => void) =>
+    cb(answer(message)),
+  );
   vi.stubGlobal("chrome", { runtime: { sendMessage: send } });
   return send;
 }
@@ -2328,6 +2335,131 @@ describe("browser-bridge relay", () => {
     send.mockClear();
     await driveEvents(id, [["browser", { requestId: "br-bulk-0", runId: "rn-bulk", op: "click", uid: "u1" }]]);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* browser-bridge relay — stored-secret input                          */
+/* ------------------------------------------------------------------ */
+
+describe("browser-bridge relay: stored-secret input", () => {
+  const POLICY = { name: "LOGIN_PW", hosts: ["jira.corp.com"], passwordOnly: true };
+  const PLAINTEXT = "hunter2secret!";
+
+  /** An extension that reports `version` on the probe and accepts every op. */
+  function useVersionedExtension(version?: string) {
+    return useExtension((message: any) =>
+      message.op === "getAllowedOrigins"
+        ? { ok: true, source: "local", patterns: [], ...(version ? { version } : {}) }
+        : { ok: true, snapshot: "page" },
+    );
+  }
+
+  function secretTypeFrame(requestId: string, runId: string) {
+    return [
+      "browser",
+      { requestId, runId, op: "type", uid: "u9", clear: true, secret: POLICY, secretText: PLAINTEXT },
+    ] as [string, unknown];
+  }
+
+  it("probes the installed build first, then forwards secret + secretText verbatim", async () => {
+    const id = seedPane();
+    const statuses = trackStatus(id);
+    const send = useVersionedExtension("0.28.0");
+    const { calls } = await driveEvents(id, [secretTypeFrame("br-sec-1", "rn-sec1")]);
+    await waitFor(() => calls.some((c) => c.url === "/api/chat/respond"));
+
+    // Order matters: the version is read BEFORE the plaintext leaves the page.
+    expect(send.mock.calls.map((c) => (c[1] as any).op)).toEqual(["getAllowedOrigins", "type"]);
+    expect(send.mock.calls[1][1]).toMatchObject({
+      op: "type",
+      uid: "u9",
+      clear: true,
+      secret: POLICY,
+      secretText: PLAINTEXT,
+    });
+    // NOT in `text`: that is the field a pre-0.28.0 build would have typed blind.
+    expect((send.mock.calls[1][1] as any).text).toBeUndefined();
+
+    // The label says a secret is going in; the value itself reaches nothing else.
+    expect(statuses()).toContain("브라우저에 시크릿을 입력하는 중…");
+    expect(JSON.stringify(statuses())).not.toContain(PLAINTEXT);
+    expect(JSON.stringify({ ...pane(id), abortController: null })).not.toContain(PLAINTEXT);
+  });
+
+  it("relays a fill_form's secret field whole and labels the turn as carrying one", async () => {
+    const id = seedPane();
+    const statuses = trackStatus(id);
+    const send = useVersionedExtension("0.31.2");
+    const fields = [
+      { uid: "u1", value: "kim" },
+      { uid: "u2", value: "", secret: POLICY, secretValue: PLAINTEXT },
+    ];
+    const { calls } = await driveEvents(id, [
+      ["browser", { requestId: "br-sec-2", runId: "rn-sec2", op: "fill_form", fields, submit: true }],
+    ]);
+    await waitFor(() => calls.some((c) => c.url === "/api/chat/respond"));
+
+    expect(send.mock.calls.map((c) => (c[1] as any).op)).toEqual(["getAllowedOrigins", "fill_form"]);
+    expect(send.mock.calls[1][1]).toMatchObject({ op: "fill_form", fields, submit: true });
+    expect(statuses()).toContain("브라우저 폼을 채우는 중(시크릿 포함)…");
+    expect(JSON.stringify(statuses())).not.toContain(PLAINTEXT);
+  });
+
+  it("refuses on a build older than 0.28.0 and never sends the value", async () => {
+    const id = seedPane();
+    const send = useVersionedExtension("0.27.0");
+    const { calls } = await driveEvents(id, [secretTypeFrame("br-sec-3", "rn-sec3")]);
+    await waitFor(() => calls.some((c) => c.url === "/api/chat/respond"));
+
+    // The probe is the ONLY message the extension ever saw.
+    expect(send.mock.calls.map((c) => (c[1] as any).op)).toEqual(["getAllowedOrigins"]);
+    const [posted] = postedTo(calls, "/api/chat/respond");
+    expect(posted).toMatchObject({ runId: "rn-sec3", requestId: "br-sec-3" });
+    expect(posted.value.ok).toBe(false);
+    expect(String(posted.value.message)).toContain("v0.27.0");
+    expect(String(posted.value.message)).toContain("0.28.0 or newer");
+    expect(String(posted.value.message)).toContain("설정 → 접근/보안 → 브라우저 브릿지");
+    expect(JSON.stringify(calls.map((c) => c.init.body ?? null))).not.toContain(PLAINTEXT);
+  });
+
+  it("refuses when the installed build reports no version at all", async () => {
+    const id = seedPane();
+    const send = useVersionedExtension(undefined);
+    const { calls } = await driveEvents(id, [secretTypeFrame("br-sec-4", "rn-sec4")]);
+    await waitFor(() => calls.some((c) => c.url === "/api/chat/respond"));
+
+    expect(send.mock.calls.map((c) => (c[1] as any).op)).toEqual(["getAllowedOrigins"]);
+    const [posted] = postedTo(calls, "/api/chat/respond");
+    expect(posted.value.ok).toBe(false);
+    expect(String(posted.value.message)).toContain("version unknown");
+    expect(JSON.stringify(calls.map((c) => c.init.body ?? null))).not.toContain(PLAINTEXT);
+  });
+
+  it("keeps the extension's own reason when it is unreachable, and still types nothing", async () => {
+    const id = seedPane();
+    // No chrome.runtime at all — a version story would be a lie here.
+    const { calls } = await driveEvents(id, [secretTypeFrame("br-sec-5", "rn-sec5")]);
+    await waitFor(() => calls.some((c) => c.url === "/api/chat/respond"));
+
+    const [posted] = postedTo(calls, "/api/chat/respond");
+    expect(posted.value.ok).toBe(false);
+    expect(String(posted.value.message)).toContain("not reachable");
+    expect(JSON.stringify(calls.map((c) => c.init.body ?? null))).not.toContain(PLAINTEXT);
+  });
+
+  it("leaves an ordinary op alone: no probe, no new label", async () => {
+    const id = seedPane();
+    const statuses = trackStatus(id);
+    const send = useExtension({ ok: true });
+    const { calls } = await driveEvents(id, [
+      ["browser", { requestId: "br-plain-1", runId: "rn-plain", op: "fill_form", fields: [{ uid: "u1", value: "kim" }] }],
+    ]);
+    await waitFor(() => calls.some((c) => c.url === "/api/chat/respond"));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect((send.mock.calls[0][1] as any).op).toBe("fill_form");
+    expect(statuses()).toContain("브라우저 폼을 채우는 중…");
   });
 });
 

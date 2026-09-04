@@ -11,6 +11,10 @@
 //   - kind=local / kind=session (read_storage): the avatar wants THIS site's
 //     localStorage / sessionStorage values — which may hold login/auth tokens —
 //     handed to it and stored in the chat.
+//   - kind=secret (type / fill_form with a stored secret): the avatar wants to
+//     TYPE one of the owner's stored secrets into this site. The only kind that
+//     writes rather than reads, so it also names the secret and whether it is
+//     restricted to a password field.
 //
 // The URL/host shown here is DISPLAY-ONLY (textContent, never markup). Whether
 // the action may happen at all was already decided (origin allowlist / the
@@ -59,6 +63,28 @@ if (kind === "cookies") {
     `${label}에 담긴 토큰이 노출되면 이 사이트에 로그인한 것과 같은 접근이 가능해집니다. 신뢰하는 작업에만 ` +
     "허용하세요. 허용은 이번 세션 동안 이 사이트의 이 저장소에 대해 유지되며, 확장 설정에서 언제든 취소할 수 " +
     "있습니다. 20초 안에 응답하지 않으면 이 요청은 만료됩니다.";
+  document.getElementById("allow").textContent = "허용";
+} else if (kind === "secret") {
+  const host = params.get("host") || "";
+  const name = params.get("name") || "";
+  // The FIELD the value would land in, decided by the owner's own per-secret
+  // 비밀번호 필드에만 setting — the user should see which of the two they are
+  // approving, because "아무 입력 필드" is the wider of the two by a lot.
+  const field = params.get("field") === "any" ? "입력 필드" : "비밀번호 필드";
+  document.title = "시크릿 입력 허용";
+  document.getElementById("title").textContent = "저장된 시크릿을 이 사이트에 입력할까요?";
+  document.getElementById("lead").textContent =
+    `아바타가 이 사이트의 ${field}에 저장해 둔 시크릿 값을 입력하려고 합니다. 값은 브라우저가 바로 입력하며 ` +
+    "아바타에게는 보이지 않습니다(길이만 확인합니다). 허용하면 이 사이트는 이번 브라우저 세션 동안 기억되어, " +
+    "확장 설정에서 취소하거나 브라우저를 닫기 전까지는 같은 사이트에서 다시 묻지 않습니다.";
+  document.getElementById("host").textContent = host || "(알 수 없는 주소)";
+  // The secret NAME, not its value — the extension never receives a value it
+  // could show here, and this page must never become the place one appears.
+  document.getElementById("url").textContent = name ? `시크릿 ${name} · ${field}` : field;
+  document.getElementById("hint").textContent =
+    "로그인을 직접 시키지 않았다면 거부하세요. 이 시크릿은 설정에서 지정한 사이트에서만 입력할 수 있고, " +
+    "허용은 이번 세션 동안 이 사이트에 대해서만 유지되며 확장 설정에서 언제든 취소할 수 있습니다. " +
+    "20초 안에 응답하지 않으면 이 요청은 만료됩니다.";
   document.getElementById("allow").textContent = "허용";
 } else {
   const rawUrl = params.get("url") || "";

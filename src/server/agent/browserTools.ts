@@ -7,7 +7,9 @@ import type {
   BrowserStorageEntry,
   BrowserTab,
 } from "./events.js";
+import { browserSecretHostAllowed, type BrowserSecretPolicy } from "../secretPolicy.js";
 import { text } from "./mcpTools.js";
+import { redactSecretValues } from "./postToolUseHook.js";
 import { jpegDimensions, visionFitSize, visionFits } from "./visionImage.js";
 
 /** MCP server name; tools surface to the model as `mcp__browser__<tool>`. */
@@ -98,6 +100,20 @@ export interface BrowserToolsContext {
    * silently pastes NOTHING there. Undefined = say both.
    */
   viewerPlatform?: "mac" | "windows" | "linux";
+  /**
+   * Stored secrets the OWNER opted into browser input (설정 → 권한·연결 → 시크릿
+   * → 브라우저 입력). ABSENT = no secret may be typed in this run at all, which
+   * is the default: an unwired caller gets the same redirecting refusal a
+   * not-enabled name gets, never a silent literal type.
+   *
+   * The model only ever names a secret; `value` resolves it server-side so the
+   * plaintext never enters the model context. Wired by runPlan from the owner's
+   * self-state + the run's injectable secret env.
+   */
+  browserSecrets?: {
+    policies: BrowserSecretPolicy[];
+    value: (name: string) => string | undefined;
+  };
 }
 
 /**
@@ -487,8 +503,135 @@ const MAX_CHARS_SCHEMA = z
       "when you only need to confirm the action took; omit for the default budget.",
   );
 
-export function buildBrowserTools(ctx: BrowserToolsContext) {
+/** Hostname of a URL the bridge reported, or undefined when it is unparseable. */
+function hostnameOf(rawUrl: string | undefined): string | undefined {
+  if (!rawUrl) return undefined;
+  try {
+    return new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/** `NAME (sites: a, b; password fields only)` — the shape both the tool text and the errors use. */
+function describeSecretPolicy(policy: BrowserSecretPolicy): string {
+  return `\`${policy.name}\` (sites: ${policy.hosts.join(", ")}; ${
+    policy.passwordOnly ? "password fields only" : "any text field"
+  })`;
+}
+
+/** What a secret resolution produced: the value to send, or the refusal to report. */
+type SecretResolution =
+  | { ok: true; policy: BrowserSecretPolicy; value: string }
+  | { ok: false; error: string };
+
+export function buildBrowserTools(context: BrowserToolsContext) {
+  // The last page the bridge said it was on. A secret is host-gated at BOTH
+  // ends; this is the SERVER end, and it can only be as fresh as the last reply
+  // — the tab may have navigated since — which is exactly why the extension
+  // re-checks the tab it is about to type into. Cheap here, and it catches the
+  // common case (a model asked to type a corporate password into whatever page
+  // it happens to be on) before the plaintext ever leaves the server.
+  let lastTabUrl: string | undefined;
+  const ctx: BrowserToolsContext = {
+    ...context,
+    execute: async (request) => {
+      const result = await context.execute(request);
+      if (result.behavior === "ok" && typeof result.url === "string" && result.url) {
+        lastTabUrl = result.url;
+      }
+      return result;
+    },
+  };
   const gate = () => (ctx.allowed ? null : text(DENIED, true));
+  const secretPolicies = ctx.browserSecrets?.policies ?? [];
+  /** The enabled roster, for a refusal that has to redirect rather than dead-end. */
+  const enabledSecretList = secretPolicies.length
+    ? secretPolicies.map((policy) => `\`${policy.name}\``).join(", ")
+    : "none";
+
+  /**
+   * Name → the value to put on the wire, or the English refusal to report.
+   * Every failure REDIRECTS (which secrets exist, where they may be used, how
+   * the owner enables one) and closes the one door that must stay shut: typing
+   * the credential literally instead.
+   */
+  const resolveSecret = (name: string): SecretResolution => {
+    const policy = secretPolicies.find((entry) => entry.name === name);
+    if (!policy) {
+      return {
+        ok: false,
+        error:
+          `\`${name}\` is not enabled for browser input. Enabled: ${enabledSecretList}. The owner can enable a ` +
+          "secret under 설정 → 권한·연결 → 시크릿 → 브라우저 입력, listing the site's host; never type a " +
+          "credential literally instead.",
+      };
+    }
+    const tabHost = hostnameOf(lastTabUrl);
+    // No URL seen yet (first op of the run): let the EXTENSION decide — it reads
+    // the live tab, and refusing here on missing evidence would be a guess.
+    if (tabHost && !browserSecretHostAllowed(tabHost, policy)) {
+      return {
+        ok: false,
+        error:
+          `Secret \`${name}\` may be entered only on: ${policy.hosts.join(", ")} — the tab is on ${tabHost}. ` +
+          "Navigate to an allowed site first; do not retry here.",
+      };
+    }
+    const value = ctx.browserSecrets?.value(name);
+    if (!value) {
+      return {
+        ok: false,
+        error:
+          `Secret \`${name}\` is enabled for browser input but its value could not be read from the server's ` +
+          "vault — it was most likely rotated or removed after this conversation started. Ask the owner to " +
+          "re-save it under 설정 → 권한·연결 → 시크릿; do not type a credential literally instead.",
+      };
+    }
+    return { ok: true, policy, value };
+  };
+
+  // The roster, once, for the three tool descriptions that have to name it.
+  const secretRoster = secretPolicies.map(describeSecretPolicy).join(", ");
+  // `type`'s credential paragraph. It BRANCHES because the honest instruction
+  // differs: with a secret enabled the model must reach for `secretName`, and
+  // with none it must refuse the field outright. One-time codes and payment
+  // details stay forbidden on BOTH branches — no policy covers those.
+  const typeSecretGuidance = secretPolicies.length
+    ? "To enter a stored credential the owner enabled for browser input, pass its NAME as `secretName` " +
+      "INSTEAD of `value` (exactly one of the two per call, never both): the server resolves the value and " +
+      "the bridge types it, so you never see it and any echo of it in a result comes back " +
+      `\`[REDACTED:<NAME>]\`. Enabled for this user: ${secretRoster}. The bridge REFUSES a secret outside ` +
+      "its allowed sites, and (when it is password-only) anywhere but a real password field, and the user " +
+      "may decline the confirmation popup their own browser shows the first time — none of those is " +
+      "retryable, so report which secret and which site instead of trying again. NEVER type a credential " +
+      "literally, never ask the user for one, and never use `secretName` on a field that is not a " +
+      "credential field. One-time codes and payment details are off-limits entirely: stop and hand control " +
+      "back to the user."
+    : "NEVER type credentials, one-time codes, or payment details — if a page asks for them, stop and hand " +
+      "control back to the user. (The owner can enable a stored secret for BROWSER INPUT under 설정 → " +
+      "권한·연결 → 시크릿, naming the sites it may be typed on; you would then enter it by NAME with " +
+      "`secretName` and never see its value. One-time codes and payment details stay off-limits either way.)";
+  // fill_form's per-field twin of the same rule.
+  const fillFormSecretGuidance = secretPolicies.length
+    ? "The credential rule applies to EVERY field: never type a password literally, and never enter " +
+      "one-time codes or payment details at all — stop and hand control back if the form asks for those. " +
+      "A field whose target IS a stored credential the owner enabled for browser input takes `secretName` " +
+      `instead of \`value\` (exactly one of the two per field): ${secretRoster}. The value is resolved ` +
+      "server-side and typed by the bridge, never shown to you; the bridge refuses it outside its allowed " +
+      "sites or on a non-password field when the secret is password-only, and that refusal is not retryable."
+    : "The credential rule applies to EVERY field: never enter passwords, one-time codes, or payment " +
+      "details — if the form asks for them, stop and hand control back. (The owner can enable a stored " +
+      "secret for browser input under 설정 → 권한·연결 → 시크릿; a field would then carry its NAME as " +
+      "`secretName` instead of a literal value.)";
+  // navigate's one-line version — it is where a login page most often appears.
+  const navigateLoginGuidance = secretPolicies.length
+    ? "The tab runs in the user's own profile, so their existing logins apply; if a login form does appear, " +
+      "enter a stored secret by NAME with `type`/`fill_form`'s `secretName` (enabled: " +
+      `${secretPolicies.map((policy) => `\`${policy.name}\``).join(", ")}) — never ask the user for a ` +
+      "password and never type a credential literally."
+    : "The tab runs in the user's own profile, so the user's existing logins apply — never ask the user for " +
+      "a password and never try to log in on their behalf.";
 
   return [
     tool(
@@ -725,9 +868,9 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
     ),
     tool(
       "navigate",
-      "Point the user's browser tab at a URL and return a fresh snapshot. The tab runs in the user's own " +
-        "profile, so the user's existing logins apply — never ask the user for a password and never try to " +
-        "log in on their behalf. What gets checked against the operator's allowlist is the DESTINATION, not " +
+      "Point the user's browser tab at a URL and return a fresh snapshot. " +
+        navigateLoginGuidance +
+        " What gets checked against the operator's allowlist is the DESTINATION, not " +
         "the page you are leaving, so this is also the way OUT of a tab stranded on a blocked page or on a " +
         "`chrome-extension://` viewer that hijacked a download. If the URL itself is refused, the site is " +
         "outside the allowlist: tell the user which site was blocked instead of retrying.",
@@ -1159,11 +1302,27 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "CodeMirror, a contentEditable body), prefer mcp__browser__copy_text and a paste over typing: such " +
         "an editor can drop part of a long typed value, and the bridge's verification note will tell you " +
         "when the write could not be confirmed. " +
-        "NEVER type credentials, one-time codes, or payment details — if a page asks for them, stop and " +
-        "hand control back to the user.",
+        typeSecretGuidance,
       {
         uid: z.string().min(1).max(120).describe("Element uid from the latest snapshot."),
-        value: z.string().max(32000).describe("Text to enter into the field."),
+        value: z
+          .string()
+          .max(32000)
+          .optional()
+          .describe(
+            "Literal text to enter into the field. Omit it when you are entering a stored secret with " +
+              "`secretName` — exactly one of the two is required.",
+          ),
+        secretName: z
+          .string()
+          .regex(/^[A-Z][A-Z0-9_]*$/)
+          .max(64)
+          .optional()
+          .describe(
+            "NAME of a stored secret the owner enabled for browser input — the server resolves the value " +
+              "and the bridge types it, so the value never reaches you. Use it INSTEAD of `value` (never " +
+              "both), and only on an actual credential field on one of the secret's allowed sites.",
+          ),
         submit: z
           .boolean()
           .optional()
@@ -1189,7 +1348,61 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
       async (args) => {
         const denied = gate();
         if (denied) return denied;
-        if (args.keystrokes && [...args.value].length > 300) {
+        const secretName = args.secretName?.trim();
+        // Exactly one source of text. Both would make the wire ambiguous (which
+        // one lands?); neither is a call with nothing to type.
+        if (secretName && typeof args.value === "string") {
+          return text(
+            "`type` takes EITHER `value` (literal text) OR `secretName` (a stored secret the owner enabled " +
+              "for browser input), never both. Pass only `secretName` for a credential field, only `value` " +
+              "for ordinary text.",
+            true,
+          );
+        }
+        if (!secretName && typeof args.value !== "string") {
+          return text(
+            "`type` needs `value` (the literal text to enter) or, for a credential field, `secretName` (a " +
+              "stored secret the owner enabled for browser input). You passed neither.",
+            true,
+          );
+        }
+        if (secretName) {
+          const resolved = resolveSecret(secretName);
+          if (!resolved.ok) return text(resolved.error, true);
+          if (args.keystrokes && [...resolved.value].length > 300) {
+            return text(
+              "keystrokes mode replays every character as key events and is capped at 300 characters per " +
+                "call, and this secret is longer than that. Type it without `keystrokes`.",
+              true,
+            );
+          }
+          const result = await ctx.execute({
+            op: "type",
+            uid: args.uid,
+            // Deliberately NOT `text`: the value rides its own field so an
+            // extension that predates secret input types nothing at all.
+            secret: {
+              name: resolved.policy.name,
+              hosts: resolved.policy.hosts,
+              passwordOnly: resolved.policy.passwordOnly,
+            },
+            secretText: resolved.value,
+            submit: args.submit || undefined,
+            clear: args.clear || undefined,
+            keystrokes: args.keystrokes || undefined,
+            maxChars: args.maxChars || undefined,
+          });
+          // Last line of defence on the way BACK: a page that echoes the value
+          // into its own DOM (a mis-typed password landing in a visible field)
+          // would otherwise print it in the snapshot.
+          return report(
+            redactSecretValues(result, { [resolved.policy.name]: resolved.value })
+              .value as BrowserResult,
+            `Entered the stored secret \`${resolved.policy.name}\` into ${args.uid} — its value is never shown to you.`,
+          );
+        }
+        const value = args.value as string;
+        if (args.keystrokes && [...value].length > 300) {
           return text(
             "keystrokes mode replays every character as key events and is capped at 300 characters per call. " +
               "Split the text into smaller chunks, or use a normal type without keystrokes for long content.",
@@ -1200,7 +1413,7 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           await ctx.execute({
             op: "type",
             uid: args.uid,
-            text: args.value,
+            text: value,
             submit: args.submit || undefined,
             clear: args.clear || undefined,
             keystrokes: args.keystrokes || undefined,
@@ -1218,14 +1431,30 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "of inserting into it (edit forms). This tool never submits: check the returned snapshot, then click " +
         "the page's own submit control. For a LONG value (over ~1,000 characters) in a rich or virtualized " +
         "editor, use mcp__browser__copy_text and a paste instead — such an editor can drop part of a long " +
-        "typed value. The credential rule applies to EVERY field: never enter passwords, " +
-        "one-time codes, or payment details — if the form asks for them, stop and hand control back.",
+        "typed value. " +
+        fillFormSecretGuidance,
       {
         fields: z
           .array(
             z.object({
               uid: z.string().min(1).max(120).describe("Element uid from the latest snapshot."),
-              value: z.string().max(32000).describe("Text to enter into the field."),
+              value: z
+                .string()
+                .max(32000)
+                .optional()
+                .describe(
+                  "Literal text to enter into this field. Omit it when the field carries `secretName` — " +
+                    "exactly one of the two is required per field.",
+                ),
+              secretName: z
+                .string()
+                .regex(/^[A-Z][A-Z0-9_]*$/)
+                .max(64)
+                .optional()
+                .describe(
+                  "NAME of a stored secret the owner enabled for browser input, entered INSTEAD of " +
+                    "`value` (never both). The value is resolved server-side and never reaches you.",
+                ),
               clear: z
                 .boolean()
                 .optional()
@@ -1246,7 +1475,11 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         if (denied) return denied;
         const fields = args.fields ?? [];
         if (!fields.length) {
-          return text("fill_form needs at least one { uid, value } field.", true);
+          return text(
+            "fill_form needs at least one field — each is { uid, value } or, for a credential field, " +
+              "{ uid, secretName }.",
+            true,
+          );
         }
         if (fields.length > 25) {
           return text(
@@ -1254,17 +1487,67 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
             true,
           );
         }
-        return report(
-          await ctx.execute({
-            op: "fill_form",
-            fields: fields.map((field) => ({
+        // Resolve every field BEFORE the first keystroke: a form half-filled and
+        // then refused leaves the page in a state the model has to unpick.
+        const wireFields: NonNullable<BrowserRequest["fields"]> = [];
+        const usedSecrets: Record<string, string> = {};
+        for (const [index, field] of fields.entries()) {
+          const where = `Field ${index + 1} (uid "${field.uid}")`;
+          const secretName = field.secretName?.trim();
+          if (secretName && typeof field.value === "string") {
+            return text(
+              `${where} carries both \`value\` and \`secretName\`. A field takes exactly one: ` +
+                "`secretName` for a credential field, `value` for ordinary text.",
+              true,
+            );
+          }
+          if (!secretName && typeof field.value !== "string") {
+            return text(
+              `${where} has neither \`value\` (literal text) nor \`secretName\` (a stored secret the ` +
+                "owner enabled for browser input). Give exactly one.",
+              true,
+            );
+          }
+          if (secretName) {
+            const resolved = resolveSecret(secretName);
+            if (!resolved.ok) return text(`${where}: ${resolved.error}`, true);
+            usedSecrets[resolved.policy.name] = resolved.value;
+            wireFields.push({
               uid: field.uid,
-              value: field.value,
+              // The visible field stays empty on the wire; the value rides
+              // `secretValue`, so a pre-secret extension writes nothing here.
+              value: "",
               clear: field.clear || undefined,
-            })),
-            maxChars: args.maxChars || undefined,
-          }),
-          `Filled ${fields.length} field${fields.length === 1 ? "" : "s"}.`,
+              secret: {
+                name: resolved.policy.name,
+                hosts: resolved.policy.hosts,
+                passwordOnly: resolved.policy.passwordOnly,
+              },
+              secretValue: resolved.value,
+            });
+            continue;
+          }
+          wireFields.push({
+            uid: field.uid,
+            value: field.value as string,
+            clear: field.clear || undefined,
+          });
+        }
+        const secretCount = Object.keys(usedSecrets).length;
+        const result = await ctx.execute({
+          op: "fill_form",
+          fields: wireFields,
+          maxChars: args.maxChars || undefined,
+        });
+        return report(
+          secretCount > 0
+            ? (redactSecretValues(result, usedSecrets).value as BrowserResult)
+            : result,
+          `Filled ${fields.length} field${fields.length === 1 ? "" : "s"}${
+            secretCount > 0
+              ? ` (${secretCount} with a stored secret, whose value is never shown to you)`
+              : ""
+          }.`,
         );
       },
     ),

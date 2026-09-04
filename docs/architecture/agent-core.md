@@ -55,6 +55,22 @@ can file it under the turn's reasoning; with **no** `onTextFold` sink the fold i
 the legacy full join (the `AgentEvents` no-sink contract). Reset per attempt alongside `assistantChunks`.
 Semantics, the SSE frame, and the client mirror → [`chat-sse-media.md`](chat-sse-media.md).
 
+### The PostToolUse redaction set follows the run's EXPOSURE paths, not the vault
+`buildAgentRunPlan` registers `buildPostToolUseHook` (`postToolUseHook.ts`) only when the run can
+actually leak a secret VALUE into tool output, and the set it registers differs by path. The two BROAD
+exposures — per-key shell env (`shellSecretEnv`) and the plugin-MCP wrapper files — hand the whole
+`injectableSecretEnv` to a process, so the whole set is redactable. **Browser input is the third path and
+the narrow one**: `browserSecretPolicies` (owner state, empty unless `browserActive && !consultationRun`)
+names the individually opted-in secrets, and only those values go into the set. So a run whose only
+exposure is browser input still registers the hook — without it a page echoing the typed password back
+into its DOM would print it in the next snapshot — while a vault secret the owner never opted in stays out
+of the redaction set entirely (redacting it would shred unrelated output for nothing). The browser tools
+additionally redact their OWN reply before `report()`, and the chat route redacts the extension's reply
+before anything reads it; the hook covers every other tool for the rest of the turn.
+Policy/columns → [`secrets-ssh.md`](secrets-ssh.md); wire + guards →
+[`browser-bridge/contract.md`](browser-bridge/contract.md) and
+[`browser-bridge/actions.md`](browser-bridge/actions.md).
+
 ### The SDK `options` bag is untyped
 `options` is a `Record<string, unknown>`, so a key the pinned SDK's `Options` does not declare compiles
 fine and then silently vanishes — the CLI never sees it. Settings-shaped knobs like `autoCompactWindow`

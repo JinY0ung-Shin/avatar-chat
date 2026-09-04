@@ -115,7 +115,7 @@ import {
   SDK_TOOL_LABELS,
   SDK_UI_HANDLED_TOOLS,
 } from "../src/shared/sdkToolPresentation.js";
-import { summarizeOwnerState } from "../src/server/agent/ownerState.js";
+import { emptyOwnerState, summarizeOwnerState } from "../src/server/agent/ownerState.js";
 import { executeRoutineJob } from "../src/server/scheduler.js";
 import {
   formatMinuteOfDay,
@@ -4097,6 +4097,65 @@ describe("buildPrompt", () => {
     expect(noBrowser).not.toContain("클립보드로 복사");
   });
 
+  it("branches the browser credential rule on the secrets the owner enabled for browser input", () => {
+    // With a stored secret opted in, the right behaviour is the OPPOSITE of the
+    // default: reach for `secretName` instead of refusing the field. With none,
+    // the avatar must still refuse AND be able to name the settings path — the
+    // greeting-only version of that never reaches a mid-task turn.
+    const withSecret = buildPrompt(
+      req({
+        browserEnabled: true,
+        browserSecrets: [
+          { name: "LOGIN_PW", hosts: ["jira.corp.com", "login.corp.com"], passwordOnly: true },
+          { name: "WIKI_USER", hosts: ["wiki.corp.com"], passwordOnly: false },
+        ],
+      }),
+      0,
+    );
+    expect(withSecret).toContain(
+      "`LOGIN_PW` (sites: jira.corp.com, login.corp.com; password fields only)",
+    );
+    expect(withSecret).toContain("`WIKI_USER` (sites: wiki.corp.com; any text field)");
+    expect(withSecret).toContain("pass its NAME as `secretName`");
+    expect(withSecret).toContain("[REDACTED:<NAME>]");
+    expect(withSecret).toContain("Never type a credential literally");
+    expect(withSecret).toContain("may decline the confirmation popup");
+    // Still forbidden, whatever the owner enabled.
+    expect(withSecret).toContain("One-time codes (OTP/2FA) and payment details remain off-limits");
+
+    const noSecret = buildPrompt(req({ browserEnabled: true }), 0);
+    expect(noSecret).toContain("never ask for a password, never type credentials or one-time codes");
+    expect(noSecret).toContain("설정 → 권한·연결 → 시크릿");
+    expect(noSecret).toContain("`브라우저 입력` toggle");
+    expect(noSecret).not.toContain("pass its NAME as `secretName`");
+
+    // No bridge this run → no browser paragraph at all, so neither branch leaks
+    // into a conversation that has no browser tools.
+    const noBrowser = buildPrompt(req({ browserSecrets: [{ name: "LOGIN_PW", hosts: ["a.example"], passwordOnly: true }] }), 0);
+    expect(noBrowser).not.toContain("pass its NAME as `secretName`");
+    expect(noBrowser).not.toContain("never ask for a password, never type credentials");
+  });
+
+  it("names browser-enabled secrets in the secrets section too, and only when there are some", () => {
+    const owner = {
+      viewerIsOwner: true,
+      secretNames: ["LOGIN_PW", "MY_API_KEY"],
+    };
+    const withBrowser = buildPrompt(
+      req({
+        ...owner,
+        browserSecrets: [{ name: "LOGIN_PW", hosts: ["jira.corp.com"], passwordOnly: true }],
+      }),
+      0,
+    );
+    expect(withBrowser).toContain("`LOGIN_PW` is ALSO enabled for BROWSER INPUT");
+    expect(withBrowser).toContain("`mcp__browser__type`/`fill_form`");
+
+    const plain = buildPrompt(req(owner), 0);
+    expect(plain).toContain("Environment-variable names registered");
+    expect(plain).not.toContain("ALSO enabled for BROWSER INPUT");
+  });
+
   it("injects deck (PPTX) guidance only when the toolchain and file output are both active", () => {
     // File output alone is not enough — the deployment must carry the toolchain.
     expect(buildPrompt(req({ viewerIsOwner: true, fileOutputEnabled: true }), 0)).not.toContain("PowerPoint decks");
@@ -4844,6 +4903,30 @@ describe("summarizeOwnerState lazy counts", () => {
     void state.gitRepoCount;
     void state.gitRepoCount;
     expect(gitSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("carries the owner's browser-input secret policies (empty until opted in)", () => {
+    const { store, config, ownerId } = setup("owner-state-browser-secrets");
+    store.setUserSecret(ownerId, "LOGIN_PW", "hunter2-corp-login");
+    // Stored but not opted in: both metacognition surfaces must read "none".
+    expect(summarizeOwnerState(store, config, ownerId).browserSecrets).toEqual([]);
+
+    store.setSecretBrowserPolicy(ownerId, "LOGIN_PW", {
+      enabled: true,
+      hosts: ["jira.corp.com"],
+      passwordOnly: true,
+    });
+    const state = summarizeOwnerState(store, config, ownerId);
+    expect(state.browserSecrets).toEqual([
+      { name: "LOGIN_PW", hosts: ["jira.corp.com"], passwordOnly: true },
+    ]);
+    // Policy only — the value never rides the snapshot the prompt is built from.
+    expect(JSON.stringify(state.browserSecrets)).not.toContain("hunter2");
+  });
+
+  it("emptyOwnerState reports no browser-input secrets (group-agent runs have no owner vault)", () => {
+    const { store, config } = setup("owner-state-browser-empty");
+    expect(emptyOwnerState(store, config).browserSecrets).toEqual([]);
   });
 });
 

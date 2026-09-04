@@ -172,12 +172,14 @@ function renderVersion() {
 
 // --------------------------------------------------- site data grants
 //
-// read_cookies / read_storage consent is per SITE, per DATA TYPE, per browser
-// SESSION: the first read of a (host, type) prompts a popup, and background.js
+// read_cookies / read_storage / secret input consent is per SITE, per DATA TYPE,
+// per browser SESSION: the first read (or first secret write) of a (host, type)
+// prompts a popup, and background.js
 // remembers the approved (host, type) in chrome.storage.session so the SAME
 // site+type does not re-prompt for the rest of the session. This panel lists
 // those remembered hosts — with which data types each has granted (쿠키 /
-// localStorage / sessionStorage) — and lets the user revoke a whole host (취소,
+// localStorage / sessionStorage / 시크릿 입력) — and lets the user revoke a whole
+// host (취소,
 // all its types) or all of them (모두 취소) mid-session; they also clear on their
 // own when the browser closes. storage.session is a TRUSTED_CONTEXTS store and
 // this page is a trusted extension context, so it is read/written here directly
@@ -186,7 +188,14 @@ function renderVersion() {
 // background.js.
 const DATA_GRANTS_KEY = "dataConsentGrants";
 // Display order + label for each data type; the keys match background.js.
-const DATA_TYPE_LABELS = { cookies: "쿠키", local: "localStorage", session: "sessionStorage" };
+// `secret` is the one that WRITES (typing a stored secret into a login field),
+// so it is listed last and named for the action rather than for a store.
+const DATA_TYPE_LABELS = {
+  cookies: "쿠키",
+  local: "localStorage",
+  session: "sessionStorage",
+  secret: "시크릿 입력",
+};
 
 const dataGrantsList = document.getElementById("data-grants");
 const dataGrantsEmpty = document.getElementById("data-grants-empty");
@@ -209,7 +218,7 @@ async function readDataGrants() {
 // non-object / legacy per-host value yields none, so it drops from the list.
 function grantedTypes(entry) {
   if (!entry || typeof entry !== "object") return [];
-  return ["cookies", "local", "session"].filter((type) => entry[type] === true);
+  return Object.keys(DATA_TYPE_LABELS).filter((type) => entry[type] === true);
 }
 
 async function revokeDataGrant(host) {

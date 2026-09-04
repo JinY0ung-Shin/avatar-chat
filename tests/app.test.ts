@@ -386,6 +386,130 @@ describe("noah-almighty platform", () => {
       .send({ shellExpose: true })
       .expect(400);
     await agent.patch("/api/me/secrets/UNSET_NAME").send({ shellExpose: true }).expect(404);
+    // An empty body no longer means "shellExpose missing" alone — the PATCH now
+    // carries two independent toggles, so it asks for either.
+    const neither = await agent.patch("/api/me/secrets/MY_API_KEY").send({}).expect(400);
+    expect(neither.body.error).toBe("shellExpose(boolean) 또는 browser 설정을 보내 주세요.");
+  });
+
+  it("toggles per-secret browser input via PATCH /api/me/secrets/:name", async () => {
+    const app = testApp();
+    const agent = request.agent(app);
+    await signup(agent, "bruno").expect(201);
+    // Distinctive enough that a leak into the response or the audit feed shows up.
+    const SECRET_VALUE = "hunter2-corp-login";
+    await agent.put("/api/me/secrets/LOGIN_PW").send({ value: SECRET_VALUE }).expect(200);
+
+    // Enable → the policy (name + hosts + password-only) rides user.browserSecrets.
+    const on = await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({ browser: { enabled: true, hosts: ["JIRA.corp.com ", "https://login.corp.com:8443/x"] } })
+      .expect(200);
+    expect(on.body.user.browserSecrets).toEqual([
+      { name: "LOGIN_PW", hosts: ["jira.corp.com", "login.corp.com"], passwordOnly: true },
+    ]);
+    // The response never carries the value, only the policy.
+    expect(JSON.stringify(on.body.user)).not.toContain(SECRET_VALUE);
+
+    // passwordOnly is explicit-only when widening.
+    const anyField = await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({ browser: { enabled: true, hosts: ["jira.corp.com"], passwordOnly: false } })
+      .expect(200);
+    expect(anyField.body.user.browserSecrets[0].passwordOnly).toBe(false);
+
+    // Disable without hosts → gone from the list, hosts remembered for next time
+    // (and a repeated disable must not quietly wipe them).
+    const off = await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({ browser: { enabled: false } })
+      .expect(200);
+    expect(off.body.user.browserSecrets).toEqual([]);
+    await agent.patch("/api/me/secrets/LOGIN_PW").send({ browser: { enabled: false } }).expect(200);
+    const back = await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({ browser: { enabled: true, hosts: ["jira.corp.com"] } })
+      .expect(200);
+    expect(back.body.user.browserSecrets[0].hosts).toEqual(["jira.corp.com"]);
+
+    // Both toggles in one request.
+    const both = await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({ shellExpose: true, browser: { enabled: false } })
+      .expect(200);
+    expect(both.body.user.shellExposedSecretNames).toEqual(["LOGIN_PW"]);
+    expect(both.body.user.browserSecrets).toEqual([]);
+
+    // Guards: non-boolean enabled, missing/invalid hosts, over the cap, reserved
+    // names, unknown secrets.
+    const notBool = await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({ browser: { enabled: "yes", hosts: ["a.corp.com"] } })
+      .expect(400);
+    expect(notBool.body.error).toBe("browser.enabled(boolean)를 보내 주세요.");
+    const noHosts = await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({ browser: { enabled: true } })
+      .expect(400);
+    expect(noHosts.body.error).toBe(
+      "브라우저 입력을 켜려면 허용 사이트(호스트)를 1개 이상 올바르게 입력해 주세요. (예: jira.corp.com)",
+    );
+    // An EMPTY array is a different path from an omitted one (the normalizer
+    // returns [] rather than null), and it is exactly what the settings form
+    // sends for an all-whitespace host box. Same refusal.
+    const emptyHosts = await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({ browser: { enabled: true, hosts: [] } })
+      .expect(400);
+    expect(emptyHosts.body.error).toBe(
+      "브라우저 입력을 켜려면 허용 사이트(호스트)를 1개 이상 올바르게 입력해 주세요. (예: jira.corp.com)",
+    );
+    // All-or-nothing: one wildcard poisons the whole list rather than being dropped.
+    await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({ browser: { enabled: true, hosts: ["jira.corp.com", "*.corp.com"] } })
+      .expect(400);
+    const tooMany = await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({
+        browser: {
+          enabled: true,
+          hosts: Array.from({ length: 21 }, (_, i) => `h${i}.corp.com`),
+        },
+      })
+      .expect(400);
+    expect(tooMany.body.error).toBe("허용 사이트는 최대 20개입니다.");
+    await agent
+      .patch("/api/me/secrets/LOGIN_PW")
+      .send({ browser: { enabled: true, hosts: ["jira.corp.com"], passwordOnly: "yes" } })
+      .expect(400);
+    await agent.put("/api/me/secrets/SSH_PRIVATE_KEY").send({ value: "k" }).expect(200);
+    const reserved = await agent
+      .patch("/api/me/secrets/SSH_PRIVATE_KEY")
+      .send({ browser: { enabled: true, hosts: ["jira.corp.com"] } })
+      .expect(400);
+    expect(reserved.body.error).toBe(
+      "이 시크릿은 전용 경로로만 사용되어 브라우저에 입력할 수 없습니다.",
+    );
+    await agent
+      .patch("/api/me/secrets/UNSET_NAME")
+      .send({ browser: { enabled: true, hosts: ["jira.corp.com"] } })
+      .expect(404);
+
+    // Audit rows carry the NAME and the hosts — never the value.
+    const audit = await agent.get("/api/audit").expect(200);
+    const details = (audit.body.audit as { action: string; detail: string }[])
+      .filter((e) => e.action === "secret_browser_expose")
+      .map((e) => e.detail);
+    expect(details).toContain(
+      "enabled secret LOGIN_PW for browser input on [jira.corp.com, login.corp.com] (password fields only)",
+    );
+    expect(details).toContain(
+      "enabled secret LOGIN_PW for browser input on [jira.corp.com] (any text field)",
+    );
+    expect(details).toContain("disabled browser input for secret LOGIN_PW");
+    // Nothing in the whole audit feed echoes the stored value.
+    expect(JSON.stringify(audit.body.audit)).not.toContain(SECRET_VALUE);
   });
 
   it("supports plugin add / list / delete", async () => {

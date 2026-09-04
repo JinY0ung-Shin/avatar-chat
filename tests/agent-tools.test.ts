@@ -115,7 +115,7 @@ import { gitRepoClonePath, gitRepoContextFromRecord } from "../src/server/gitRep
 import { getWorkspaceRepo } from "../src/server/repoWorkspace.js";
 import { buildCanvasTools, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES, MAX_CANVAS_CONTENT_CHARS } from "../src/server/agent/canvasTools.js";
 import { buildBrowserTools } from "../src/server/agent/browserTools.js";
-import type { CanvasRequest, CanvasResult } from "../src/server/agent/events.js";
+import type { BrowserRequest, CanvasRequest, CanvasResult } from "../src/server/agent/events.js";
 import {
   buildFileOutputTools,
   FILE_OUTPUT_SERVER_NAME,
@@ -2170,6 +2170,57 @@ describe("system tools (avatar system management)", () => {
     const off = (await callTool(toolsFor(s), "describe_system", {})).content[0].text ?? "";
     expect(off).toContain("Browser control (mcp__browser__*): unavailable in this run");
     expect(off).not.toContain("maxChars");
+  });
+
+  it("describe_system reports browser-typeable secrets, and says so honestly with no bridge", async () => {
+    // The runtime mirror of the prompt's browser-secret branch. Both surfaces
+    // have to name the same policies, and the run-scoped half matters most:
+    // the policies exist per USER, but with no bridge in this run there is
+    // nothing to type them into — offering the route anyway is the failure.
+    const s = setup("st-browser-secret");
+    s.store.setUserSecret(s.owner.id, "LOGIN_PW", "hunter2-corp-secret");
+    s.store.setSecretBrowserPolicy(s.owner.id, "LOGIN_PW", {
+      enabled: true,
+      hosts: ["jira.corp.com", "login.corp.com"],
+      passwordOnly: true,
+    });
+
+    const connected =
+      (
+        await callTool(
+          buildSystemTools(s.store, { ...s.baseCtx, viewerIsOwner: true, browserEnabled: true }),
+          "describe_system",
+          {},
+        )
+      ).content[0].text ?? "";
+    expect(connected).toContain(
+      "Browser-typeable secrets: `LOGIN_PW` → jira.corp.com, login.corp.com (password fields only)",
+    );
+    expect(connected).toContain("pass the NAME as `secretName`");
+    expect(connected).toContain("[REDACTED:<NAME>]");
+    // The browser-control line points at it from the tool side.
+    expect(connected).toContain("type and fill_form additionally accept `secretName`");
+    // The value itself never appears anywhere in the self-report.
+    expect(connected).not.toContain("hunter2-corp-secret");
+
+    const noBridge = (await callTool(toolsFor(s), "describe_system", {})).content[0].text ?? "";
+    expect(noBridge).toContain("Browser-typeable secrets: `LOGIN_PW`");
+    expect(noBridge).toContain("browser control is NOT connected in this run");
+    expect(noBridge).not.toContain("pass the NAME as `secretName`");
+
+    // Nothing enabled → the line names the settings path instead of going quiet.
+    const bare = setup("st-browser-secret-none");
+    const none =
+      (
+        await callTool(
+          buildSystemTools(bare.store, { ...bare.baseCtx, viewerIsOwner: true, browserEnabled: true }),
+          "describe_system",
+          {},
+        )
+      ).content[0].text ?? "";
+    expect(none).toContain(
+      "Browser-typeable secrets: (none — the owner enables browser input per secret under 설정 → 권한·연결 → 시크릿 → 브라우저 입력",
+    );
   });
 
   it("describe_system reports canvas availability and the AskUserQuestion redirect", async () => {
@@ -5400,5 +5451,262 @@ describe("browser bridge tab management", () => {
       expect(res.isError, name).toBe(true);
     }
     expect(execute).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Browser secret input (브라우저 입력): the model names a stored secret and the
+ * SERVER resolves it, so the plaintext never enters the model context. Every
+ * case here guards one half of that: the value goes out on its OWN wire field
+ * (never `text`), a name the owner did not enable is refused with a redirect
+ * rather than an invitation to type the credential literally, the last tab URL
+ * the bridge reported is a server-side host pre-check, and whatever the page
+ * echoes back is redacted before the model sees the result.
+ */
+describe("browser bridge secret input", () => {
+  const LOGIN_PW = { name: "LOGIN_PW", hosts: ["jira.corp.com", "login.corp.com"], passwordOnly: true };
+  const WIKI_USER = { name: "WIKI_USER", hosts: ["jira.corp.com"], passwordOnly: false };
+
+  /** ctx.browserSecrets with a fixed vault; `value` stands in for the run's injectable env. */
+  const secretsCtx = (
+    policies: { name: string; hosts: string[]; passwordOnly: boolean }[] = [LOGIN_PW, WIKI_USER],
+    vault: Record<string, string> = { LOGIN_PW: "hunter2-corp-secret", WIKI_USER: "j.kim" },
+  ) => ({ policies, value: (name: string) => vault[name] });
+
+  const okOn = (url: string, extra: Record<string, unknown> = {}) =>
+    vi.fn(async (_request: BrowserRequest) => ({
+      behavior: "ok" as const,
+      url,
+      title: "T",
+      ...extra,
+    }));
+
+  it("puts the value on `secretText` and NEVER on `text`, with the policy the extension re-enforces", async () => {
+    const execute = okOn("https://jira.corp.com/login", { snapshot: "[e1] textbox" });
+    const tools = buildBrowserTools({ execute, allowed: true, browserSecrets: secretsCtx() });
+
+    // A read first, so the closure knows which host the tab is on.
+    await callTool(tools, "snapshot", {});
+    const res = await callTool(tools, "type", { uid: "e1", secretName: "LOGIN_PW", submit: true });
+
+    expect(res.isError).toBeFalsy();
+    expect(execute).toHaveBeenLastCalledWith({
+      op: "type",
+      uid: "e1",
+      secret: { name: "LOGIN_PW", hosts: ["jira.corp.com", "login.corp.com"], passwordOnly: true },
+      secretText: "hunter2-corp-secret",
+      submit: true,
+    });
+    // The degrade story lives on this assertion: an extension that predates
+    // secret input reads `text` and must find NOTHING there.
+    expect(execute.mock.calls.at(-1)![0].text).toBeUndefined();
+    // Nor may the value appear in the model-facing text.
+    expect(res.content[0].text).toContain("LOGIN_PW");
+    expect(res.content[0].text).not.toContain("hunter2-corp-secret");
+  });
+
+  it("requires exactly one of value/secretName on `type`, without reaching the bridge", async () => {
+    const execute = okOn("https://jira.corp.com/login");
+    const tools = buildBrowserTools({ execute, allowed: true, browserSecrets: secretsCtx() });
+
+    const both = await callTool(tools, "type", { uid: "e1", value: "x", secretName: "LOGIN_PW" });
+    expect(both.isError).toBe(true);
+    expect(both.content[0].text).toContain("never both");
+
+    const neither = await callTool(tools, "type", { uid: "e1" });
+    expect(neither.isError).toBe(true);
+    expect(neither.content[0].text).toContain("You passed neither");
+
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps `value` optional in the schema so a secret-only type validates", () => {
+    const schema = browserSchema(
+      buildBrowserTools({ execute: okOn("https://jira.corp.com/"), allowed: true, browserSecrets: secretsCtx() }),
+      "type",
+    );
+    expect(schema.value.safeParse(undefined).success).toBe(true);
+    expect(schema.secretName.safeParse("LOGIN_PW").success).toBe(true);
+    // Env-name shape only: a lowercase or path-ish name must not reach the vault lookup.
+    expect(schema.secretName.safeParse("login_pw").success).toBe(false);
+    expect(schema.secretName.safeParse("../../etc").success).toBe(false);
+  });
+
+  it("refuses a name the owner did not enable, listing what IS enabled and how to enable more", async () => {
+    const execute = okOn("https://jira.corp.com/login");
+    const tools = buildBrowserTools({ execute, allowed: true, browserSecrets: secretsCtx() });
+
+    const res = await callTool(tools, "type", { uid: "e1", secretName: "ROOT_PW" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("`ROOT_PW` is not enabled for browser input");
+    expect(res.content[0].text).toContain("Enabled: `LOGIN_PW`, `WIKI_USER`");
+    expect(res.content[0].text).toContain("never type a credential literally instead");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("refuses every secret when the run wired none at all", async () => {
+    // The DEFAULT: an unwired caller must get the same redirecting refusal, not
+    // a silent literal type.
+    const execute = okOn("https://jira.corp.com/login");
+    const tools = buildBrowserTools({ execute, allowed: true });
+    const res = await callTool(tools, "type", { uid: "e1", secretName: "LOGIN_PW" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("Enabled: none");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("pre-checks the LAST tab url the bridge reported, and lets the extension decide when none is known", async () => {
+    const wrongHost = okOn("https://phish.example/login", { snapshot: "[e1] textbox" });
+    const tools = buildBrowserTools({ execute: wrongHost, allowed: true, browserSecrets: secretsCtx() });
+    await callTool(tools, "snapshot", {});
+    const refused = await callTool(tools, "type", { uid: "e1", secretName: "LOGIN_PW" });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain("only on: jira.corp.com, login.corp.com");
+    expect(refused.content[0].text).toContain("the tab is on phish.example");
+    expect(refused.content[0].text).toContain("do not retry here");
+    expect(wrongHost).toHaveBeenCalledTimes(1); // the snapshot only
+
+    // Nothing seen yet: refusing on missing evidence would be a guess, and the
+    // extension re-checks the live tab anyway.
+    const cold = okOn("https://jira.corp.com/login");
+    const coldTools = buildBrowserTools({ execute: cold, allowed: true, browserSecrets: secretsCtx() });
+    const sent = await callTool(coldTools, "type", { uid: "e1", secretName: "LOGIN_PW" });
+    expect(sent.isError).toBeFalsy();
+    expect(cold).toHaveBeenCalledTimes(1);
+  });
+
+  it("redacts the secret out of whatever the page echoed back", async () => {
+    // A password typed into a mislabelled text input lands in the AX value.
+    const execute = okOn("https://jira.corp.com/login", {
+      snapshot: '[e1] textbox = "hunter2-corp-secret"',
+      note: 'Field now reads "hunter2-corp-secret".',
+    });
+    const tools = buildBrowserTools({ execute, allowed: true, browserSecrets: secretsCtx() });
+    await callTool(tools, "snapshot", {});
+    const res = await callTool(tools, "type", { uid: "e1", secretName: "LOGIN_PW" });
+    expect(res.content[0].text).not.toContain("hunter2-corp-secret");
+    expect(res.content[0].text).toContain("[REDACTED:LOGIN_PW]");
+  });
+
+  it("refuses a secret whose value vanished from the vault instead of typing nothing", async () => {
+    const execute = okOn("https://jira.corp.com/login");
+    const tools = buildBrowserTools({
+      execute,
+      allowed: true,
+      browserSecrets: secretsCtx([LOGIN_PW], {}),
+    });
+    const res = await callTool(tools, "type", { uid: "e1", secretName: "LOGIN_PW" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("could not be read from the server's");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("fills a mixed form: a literal field, plus a secret field carrying an empty `value`", async () => {
+    const execute = okOn("https://jira.corp.com/login", { snapshot: "ok" });
+    const tools = buildBrowserTools({ execute, allowed: true, browserSecrets: secretsCtx() });
+    await callTool(tools, "snapshot", {});
+
+    const res = await callTool(tools, "fill_form", {
+      fields: [
+        { uid: "e1", secretName: "WIKI_USER" },
+        { uid: "e2", secretName: "LOGIN_PW", clear: true },
+        { uid: "e3", value: "remember" },
+      ],
+    });
+    expect(res.isError).toBeFalsy();
+    expect(execute).toHaveBeenLastCalledWith({
+      op: "fill_form",
+      fields: [
+        {
+          uid: "e1",
+          value: "",
+          clear: undefined,
+          secret: { name: "WIKI_USER", hosts: ["jira.corp.com"], passwordOnly: false },
+          secretValue: "j.kim",
+        },
+        {
+          uid: "e2",
+          value: "",
+          clear: true,
+          secret: { name: "LOGIN_PW", hosts: ["jira.corp.com", "login.corp.com"], passwordOnly: true },
+          secretValue: "hunter2-corp-secret",
+        },
+        { uid: "e3", value: "remember", clear: undefined },
+      ],
+    });
+    expect(res.content[0].text).toContain("2 with a stored secret");
+    expect(res.content[0].text).not.toContain("hunter2-corp-secret");
+  });
+
+  it("attributes a per-field secret refusal to its field and fills NOTHING", async () => {
+    const execute = okOn("https://jira.corp.com/login", { snapshot: "ok" });
+    const tools = buildBrowserTools({ execute, allowed: true, browserSecrets: secretsCtx() });
+    await callTool(tools, "snapshot", {});
+
+    const unknown = await callTool(tools, "fill_form", {
+      fields: [{ uid: "e1", value: "a" }, { uid: "e2", secretName: "ROOT_PW" }],
+    });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content[0].text).toContain('Field 2 (uid "e2")');
+    expect(unknown.content[0].text).toContain("not enabled for browser input");
+
+    const both = await callTool(tools, "fill_form", {
+      fields: [{ uid: "e1", value: "a", secretName: "LOGIN_PW" }],
+    });
+    expect(both.isError).toBe(true);
+    expect(both.content[0].text).toContain('Field 1 (uid "e1")');
+
+    const neither = await callTool(tools, "fill_form", { fields: [{ uid: "e1" }] });
+    expect(neither.isError).toBe(true);
+    expect(neither.content[0].text).toContain("Give exactly one");
+
+    // Only the setup snapshot ever reached the bridge: a half-filled form is
+    // worse than a refused one.
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-reads the host from the LATEST reply, so a navigation off the allowed site flips the answer", async () => {
+    // The pre-check is only as fresh as the last url the bridge reported, which
+    // is why the extension re-checks too — but within a turn the tracker must at
+    // least follow the tab: an allowed type followed by a navigate elsewhere
+    // must not stay allowed.
+    const execute = vi
+      .fn<(request: { op: string }) => Promise<{ behavior: "ok"; url: string; title: string }>>()
+      .mockResolvedValueOnce({ behavior: "ok", url: "https://jira.corp.com/login", title: "T" })
+      .mockResolvedValueOnce({ behavior: "ok", url: "https://jira.corp.com/login", title: "T" })
+      .mockResolvedValueOnce({ behavior: "ok", url: "https://intranet.example/other", title: "T" });
+    const tools = buildBrowserTools({ execute, allowed: true, browserSecrets: secretsCtx() });
+
+    await callTool(tools, "snapshot", {});
+    const allowed = await callTool(tools, "type", { uid: "e1", secretName: "LOGIN_PW" });
+    expect(allowed.isError).toBeFalsy();
+
+    await callTool(tools, "navigate", { url: "https://intranet.example/other" });
+    const refused = await callTool(tools, "type", { uid: "e1", secretName: "LOGIN_PW" });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain("the tab is on intranet.example");
+    expect(execute).toHaveBeenCalledTimes(3); // snapshot, type, navigate — the refusal never left
+  });
+
+  it("branches the type/fill_form/navigate descriptions on what the owner actually enabled", () => {
+    const withSecrets = buildBrowserTools({
+      execute: okOn("https://jira.corp.com/"),
+      allowed: true,
+      browserSecrets: secretsCtx([LOGIN_PW]),
+    });
+    const typeDesc = withSecrets.find((t) => t.name === "type")!.description;
+    expect(typeDesc).toContain("`LOGIN_PW` (sites: jira.corp.com, login.corp.com; password fields only)");
+    expect(typeDesc).toContain("secretName");
+    expect(typeDesc).toContain("One-time codes and payment details are off-limits");
+    expect(withSecrets.find((t) => t.name === "fill_form")!.description).toContain("secretName");
+    expect(withSecrets.find((t) => t.name === "navigate")!.description).toContain("secretName");
+
+    const without = buildBrowserTools({ execute: okOn("https://jira.corp.com/"), allowed: true });
+    const plainType = without.find((t) => t.name === "type")!.description;
+    expect(plainType).toContain("NEVER type credentials, one-time codes, or payment details");
+    expect(plainType).toContain("설정 → 권한·연결 → 시크릿");
+    expect(without.find((t) => t.name === "navigate")!.description).toContain(
+      "never try to log in on their behalf",
+    );
   });
 });

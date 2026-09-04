@@ -57,6 +57,26 @@ import {
   EXTRA_CLICKABLE_MAX,
   EXTRA_CLICKABLE_GROUP_HEAD,
 } from "./axtree.js";
+import {
+  SECRET_CONSENT_TYPE,
+  SECRET_CONSENT_ALREADY_OPEN,
+  SECRET_CONSENT_DECLINED,
+  SECRET_CONSENT_UNANSWERED,
+  secretConsentOpenFailed,
+  hostOfUrl,
+  secretHostAllowed,
+  isPasswordInputShape,
+  secretTabHostRefusal,
+  secretFrameHostRefusal,
+  secretFrameUnknownRefusal,
+  secretPasswordOnlyRefusal,
+  secretNonTextRefusal,
+  secretValueMissingRefusal,
+  secretEnteredNote,
+  secretVerifiedNote,
+  secretUnverifiedNote,
+  secretLengthMismatchNote,
+} from "./secretInput.js";
 
 const GROUP_TITLE = "Noah";
 const CDP_VERSION = "1.3";
@@ -1264,6 +1284,16 @@ const DATA_CONSENT_COPY = {
     unanswered: STORAGE_CONSENT_UNANSWERED,
     openFailed: STORAGE_OPEN_FAILED,
   },
+  // The one grant kind that WRITES. It rides the same store and the same popup
+  // for the same reason the reads do: the gate has to live where the server
+  // cannot reach it, and a user who has approved "type LOGIN_PW on this site"
+  // should not be asked again on every field of the same form.
+  [SECRET_CONSENT_TYPE]: {
+    declined: SECRET_CONSENT_DECLINED,
+    unanswered: SECRET_CONSENT_UNANSWERED,
+    alreadyOpen: SECRET_CONSENT_ALREADY_OPEN,
+    openFailed: secretConsentOpenFailed,
+  },
 };
 
 async function readDataGrants() {
@@ -1302,7 +1332,7 @@ async function rememberDataGrant(host, type) {
  * headless / background path from reading this data without the user's live
  * approval — a background run reaches neither the popup nor a grant it never made.
  */
-async function requestDataConsent(host, type) {
+async function requestDataConsent(host, type, extra) {
   const copy = DATA_CONSENT_COPY[type] || DATA_CONSENT_COPY.cookies;
   // Already approved this (site, type) this session → honor it with no popup.
   // A read error in readDataGrants fails closed (returns {}), so we fall through
@@ -1310,9 +1340,16 @@ async function requestDataConsent(host, type) {
   // likewise fails the STRICT === true check and re-prompts.
   const grants = await readDataGrants();
   if (grants[host]?.[type] === true) return { granted: true };
+  // `extra` is what the popup needs to say WHICH secret and WHICH kind of field
+  // (the read kinds need nothing beyond the host). Encoded here, so no caller
+  // can hand the popup a pre-built query string.
+  const extras = Object.entries(extra || {})
+    .map(([key, value]) => `&${encodeURIComponent(key)}=${encodeURIComponent(String(value ?? ""))}`)
+    .join("");
   const outcome = await openConsentPopup({
-    query: `kind=${type}&host=${encodeURIComponent(host)}`,
+    query: `kind=${type}&host=${encodeURIComponent(host)}${extras}`,
     alreadyOpenReason:
+      copy.alreadyOpen ||
       "A confirmation popup is already open in the user's browser. Wait for their answer instead of retrying.",
     openFailedReason: copy.openFailed,
     declinedReason: copy.declined,
@@ -3822,6 +3859,211 @@ async function clearAndWrite(ref, target, value, insert) {
   );
 }
 
+// ---------------------------------------------------------------- secret input
+//
+// Typing a STORED SECRET (설정 → 권한·연결 → 시크릿 → 브라우저 입력) into a page.
+// The model names the secret, the server resolves it, and the plaintext reaches
+// this worker on `secretText` / `secretValue` — never on `text`/`value`, so a
+// build that predates this feature types NOTHING rather than typing a credential
+// unguarded.
+//
+// Everything below exists because the model, which chose the target, may itself
+// be acting on text a PAGE fed it. So the policy that rides with the value is
+// re-checked at the keyboard, in this order, before a single key is sent:
+//
+//   1. the TAB's hostname must be on the secret's allowlist (exact match);
+//   2. the DOCUMENT the element actually lives in must be too — a page on an
+//      allowed host can embed a login form from anywhere, and the tab URL says
+//      nothing about who would receive the keystrokes;
+//   3. with `passwordOnly` (the default) the target must be a real
+//      `<input type=password>`;
+//   4. the user must approve, in a popup this side of the wire, the first time a
+//      secret is typed on that site in this browser session.
+//
+// The shape check sits AHEAD of the popup deliberately. The popup names the
+// field kind it is asking about ("비밀번호 필드"), so prompting and THEN refusing
+// because the target was never a password input asks the user a question about
+// a write that could not happen — and an approval leaves a session grant behind
+// for it. The check is one depth-0 describeNode and depends on nothing the
+// consent decides, so it is free to run first.
+//
+// And the write itself is deliberately NARROWER than the ordinary one: no rung
+// of the clearing ladder runs, nothing is quoted, and verification is by LENGTH
+// against a read-back that Chromium already masks (one `•` per character —
+// `tests/visual/password-facts.spec.ts`). The pure decisions and every string
+// live in `secretInput.js`.
+
+/**
+ * The URL of the DOCUMENT one element lives in, or null when that cannot be
+ * established. Fail-closed by construction: every failure answers null, and the
+ * caller refuses on null.
+ *
+ * Two routes, and using the wrong one is a real bypass rather than an
+ * inaccuracy (all of this is measured in `tests/visual/password-facts.spec.ts`):
+ *
+ *   OOPIF (`ref.sessionId`) — a cross-site frame renders in its OWN process, and
+ *     backendNodeIds are per-PROCESS: the id of a node inside it also names an
+ *     unrelated node in the top document. Attributing it through the root target
+ *     would answer with the TOP page's URL — precisely the host the secret IS
+ *     allowed on. So it is asked of its own session, which simply IS that
+ *     document.
+ *   Root session — the only other documents a root-session node can be in are
+ *     the same-process child frames the root frame tree lists. None of those and
+ *     the answer is the main frame, which is the ordinary login page and costs
+ *     nothing. Otherwise ONE `DOMSnapshot.captureSnapshot` attributes every node
+ *     in the target to its own document.
+ *
+ * Only `documentURL` is read off that capture. Its `inputValue` column carries
+ * field values in PLAINTEXT (measured — it is why a snapshot must never render
+ * it), so nothing else from the response may be touched, logged, or returned.
+ */
+async function refDocumentUrl(ref) {
+  if (ref.sessionId) {
+    try {
+      const { frameTree } = await sendCdp(
+        { tabId: ref.tabId, sessionId: ref.sessionId },
+        "Page.getFrameTree",
+        {},
+      );
+      return String(frameTree?.frame?.url || "") || null;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const { frameTree } = await sendCdp({ tabId: ref.tabId }, "Page.getFrameTree", {});
+    if (!(frameTree?.childFrames || []).length) return String(frameTree?.frame?.url || "") || null;
+  } catch {
+    return null;
+  }
+  try {
+    const snap = await sendCdp({ tabId: ref.tabId }, "DOMSnapshot.captureSnapshot", {
+      computedStyles: [],
+    });
+    const strings = Array.isArray(snap?.strings) ? snap.strings : [];
+    for (const doc of snap?.documents || []) {
+      const ids = doc?.nodes?.backendNodeId;
+      if (!Array.isArray(ids) || !ids.includes(ref.backendNodeId)) continue;
+      const url = strings[doc.documentURL];
+      return typeof url === "string" && url ? url : null;
+    }
+  } catch {
+    return null;
+  }
+  // The node is in no document this target knows about — it detached, or it
+  // belongs to a frame that has gone. Unknown, never "probably the main frame".
+  return null;
+}
+
+/**
+ * Every gate a secret write must pass, in the order above — cheap and silent
+ * checks first, the one that interrupts a PERSON last. Returns the model-facing
+ * refusal to answer with, or "" when the write may proceed.
+ *
+ * Every field of the policy is read FAIL-CLOSED, because this object crossed
+ * five layers to get here and a field lost on the way must not widen anything:
+ * a missing/short host list matches nothing, and `passwordOnly` is off ONLY on an
+ * explicit `false` (a dropped flag reads as the restrictive default the server
+ * also defaults to).
+ *
+ * The consent grant is keyed by (host, "secret") like every other kind in the
+ * unified store, NOT by secret name: it answers "may a stored secret be typed on
+ * this site this session", which is the question the user was actually asked, and
+ * it keeps a 12-field form from raising 12 popups. The popup itself names the
+ * secret and the field kind so the answer is given with those in view.
+ */
+async function secretWriteRefusal(tab, ref, policy, value) {
+  const name = policy?.name;
+  const hosts = Array.isArray(policy?.hosts) ? policy.hosts : [];
+  const passwordOnly = policy?.passwordOnly !== false;
+  // A policy without its value means the relay dropped the plaintext. Refuse
+  // LOUDLY: the silent alternative is entering "" into a login form and
+  // reporting success.
+  if (typeof value !== "string" || !value) return secretValueMissingRefusal({ name });
+
+  // The ELEMENT's tab, which is not always the working one: a uid minted on
+  // another grouped tab still resolves, and checking the tab the agent happens
+  // to be looking at would ask about the wrong page entirely.
+  let refTab = tab;
+  if (ref.tabId !== tab.id) {
+    try {
+      refTab = await groupedTabById(ref.tabId);
+    } catch {
+      // The tab left the group or closed under us. Unknown target, so refuse —
+      // typeRef would fail on it a moment later anyway.
+      return secretFrameUnknownRefusal({ name });
+    }
+  }
+  if (!secretHostAllowed(refTab.url, hosts)) {
+    return secretTabHostRefusal({ name, hosts, url: refTab.url });
+  }
+
+  const frameUrl = await refDocumentUrl(ref);
+  if (frameUrl === null) return secretFrameUnknownRefusal({ name });
+  if (!secretHostAllowed(frameUrl, hosts)) {
+    return secretFrameHostRefusal({ name, hosts, frameUrl, tabUrl: refTab.url });
+  }
+
+  // Before the popup on purpose (see the section header): a prompt the answer to
+  // which cannot matter is a prompt not worth raising, and an approval to it
+  // would leave a session grant behind for a write that never happened.
+  if (passwordOnly) {
+    const shape = await describeElement(ref);
+    if (!isPasswordInputShape(shape)) return secretPasswordOnlyRefusal({ name, shape });
+  }
+
+  // Keyed on the document that will RECEIVE the keystrokes, not the tab — both
+  // passed the allowlist above, and the frame is the honest subject. LAST, so
+  // the user is only ever asked about a write every other gate has cleared.
+  const consent = await requestDataConsent(hostOfUrl(frameUrl), SECRET_CONSENT_TYPE, {
+    name: String(name ?? ""),
+    field: passwordOnly ? "password" : "any",
+  });
+  if (!consent.granted) return consent.reason;
+  return "";
+}
+
+/**
+ * Enter a secret into one field — the ONLY write path a secret ever takes.
+ *
+ * Deliberately NOT `fillField`/`clearAndWrite`. Every end state of the ordinary
+ * clearing ladder quotes what the field landed on (`repairedNote`,
+ * `divergedNote`, the throw), and its rungs B and C hand the value back to the
+ * page a second and third time; a secret write must do neither. So `clear` is
+ * exactly ONE rung — select-all, overtype — checked by LENGTH against the
+ * read-back Chromium masks, and a mismatch is a note rather than a repair
+ * attempt: repairing would mean typing the credential again into a field that
+ * demonstrably does not behave.
+ *
+ * The insert-at-cursor case takes no read-back at all, exactly like the ordinary
+ * short-write path (and unlike the long-write check, which reads the field back
+ * to CONTAINS-match what was sent — a comparison that would need the plaintext).
+ */
+async function writeSecretField(ref, target, policy, value, clear, insert) {
+  const name = policy?.name;
+  const sent = [...value].length;
+  await focusForInput(ref);
+  if (!clear) {
+    await insert();
+    return secretEnteredNote({ name, sent });
+  }
+  // Resolved BEFORE the write, like every other verified path: the walk descends
+  // the live DOM and a page that re-renders on input would otherwise hand back a
+  // node the write never touched. Its pre-write VALUE is deliberately discarded
+  // — nothing here compares content.
+  const resolved = await resolveValueNode(ref);
+  await selectAllIn(target);
+  await insert();
+  if (!resolved) return secretUnverifiedNote({ name, sent });
+  // A change handler can raise a dialog mid-write; the read would hang on the
+  // frozen renderer and the op tail reports the dialog instead.
+  if (pendingDialogs.has(ref.tabId)) return "";
+  const after = codePointLen(await settledValue(resolved.ref));
+  if (after === null) return secretUnverifiedNote({ name, sent });
+  if (after !== sent) return secretLengthMismatchNote({ name, sent, read: after });
+  return secretVerifiedNote({ name, sent });
+}
+
 // ------------------------------------------------- controls that hold no text
 //
 // `type` means "put this text in there", and two native controls have no text
@@ -4144,9 +4386,16 @@ const longWriteMismatchNote = (sent, after, proxy) =>
  * there is nothing to report). `pre` is typeRef's already-run preflight; every
  * other caller (fill_form) lets this run its own.
  */
-async function fillField(ref, value, clear, pre) {
+async function fillField(ref, value, clear, pre, secret) {
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
   const { shape, kind, virtualized } = pre || (await inputPreflight(ref));
+  // A secret bypasses the kind routing entirely — every non-text control's write
+  // path verifies by quoting the value it landed on, which a secret write may
+  // never do, so the only sound answer for one is to refuse.
+  if (secret) {
+    if (kind !== "text") throw new Error(secretNonTextRefusal({ name: secret.name, shape }));
+    return writeSecretField(ref, target, secret, value, clear, () => insertValue(target, value));
+  }
   // `clear` is meaningless on a slider — there is no text to replace — so the
   // control is driven as what it is, whichever flags the caller passed.
   if (kind === "slider") return driveSlider(ref, value, shape);
@@ -4196,29 +4445,36 @@ async function fillField(ref, value, clear, pre) {
 }
 
 /** Type into one field. Returns the clearing ladder's bridge note, or "". */
-async function typeRef(uid, value, submit, keystrokes, clear) {
+async function typeRef(uid, value, submit, keystrokes, clear, secret) {
   const ref = resolveRef(uid);
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
   // One description for the whole call: it refuses a file-upload input before a
   // single key is sent, and decides the control kind fillField then reuses.
   const pre = await inputPreflight(ref);
+  // Replay as real per-character key events, ONE bridge operation for the whole
+  // string — for editors that only listen to keyboard input. Server caps the
+  // length; the dialog check keeps a mid-string alert() from queueing keystrokes
+  // into a frozen renderer. Hoisted out of the keystrokes branch because it is
+  // also the secret path's insert when the caller asked for keystrokes.
+  const replay = async () => {
+    for (const ch of [...value]) {
+      if (pendingDialogs.has(ref.tabId)) return;
+      await dispatchKey(target, ch === "\n" ? "Enter" : ch, 0);
+    }
+  };
   let note = "";
-  if (pre.kind === "slider") {
+  if (secret) {
+    // Ahead of every other branch: a secret takes ONE write path, whatever kind
+    // of control the caller aimed at (see fillField's secret branch).
+    if (pre.kind !== "text") throw new Error(secretNonTextRefusal({ name: secret.name, shape: pre.shape }));
+    const insert = keystrokes ? replay : () => insertValue(target, value);
+    note = await writeSecretField(ref, target, secret, value, clear, insert);
+  } else if (pre.kind === "slider") {
     // Ahead of the keystrokes branch deliberately: a per-character replay is
     // text entry too, and a slider has no text to enter.
     note = await driveSlider(ref, value, pre.shape);
   } else if (keystrokes) {
     await focusForInput(ref);
-    // Replay as real per-character key events, ONE bridge operation for the
-    // whole string — for editors that only listen to keyboard input. Server
-    // caps the length; the dialog check keeps a mid-string alert() from
-    // queueing keystrokes into a frozen renderer.
-    const replay = async () => {
-      for (const ch of [...value]) {
-        if (pendingDialogs.has(ref.tabId)) return;
-        await dispatchKey(target, ch === "\n" ? "Enter" : ch, 0);
-      }
-    };
     // Same ladder, same verification; the replay IS this mode's insert path, so
     // the first character overtypes the selection instead of extending the value.
     if (clear) note = await clearAndWrite(ref, target, value, replay);
@@ -6042,6 +6298,16 @@ async function performOp(message, stagingOrigin) {
   } else if (message.op === "type") {
     const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
+    // A stored secret rides `secretText`, NEVER `text` — so a build that predates
+    // this feature reads `message.text || ""` and types nothing at all.
+    const secret = message.secret && typeof message.secret === "object" ? message.secret : null;
+    const text = secret ? String(message.secretText ?? "") : message.text || "";
+    // Every gate BEFORE the highlight, so a refused secret does not even draw a
+    // box on the field it was aimed at.
+    if (secret) {
+      const denial = await secretWriteRefusal(tab, resolveRef(message.uid), secret, text);
+      if (denial) return { ok: false, message: denial };
+    }
     // resolveRef is an idempotent map lookup, so resolving here purely to draw
     // the box costs nothing and typeRef resolving it again below is fine — that
     // is cheaper than threading a highlight through typeRef/fillField.
@@ -6053,10 +6319,11 @@ async function performOp(message, stagingOrigin) {
       (async () => {
         note = await typeRef(
           message.uid,
-          message.text || "",
+          text,
           Boolean(message.submit),
           Boolean(message.keystrokes),
           Boolean(message.clear),
+          secret,
         );
       })(),
     );
@@ -6078,6 +6345,29 @@ async function performOp(message, stagingOrigin) {
       const uid = String(field.uid || "");
       const refused = await assertRefTabUsable(uid, patterns, source, stagingOrigin);
       if (refused) return refused;
+      // Per FIELD, not per call: one form can mix ordinary values with a secret,
+      // and each secret carries its own policy.
+      const secret = field.secret && typeof field.secret === "object" ? field.secret : null;
+      const value = secret ? String(field.secretValue ?? "") : String(field.value ?? "");
+      if (secret) {
+        let denial = "";
+        try {
+          denial = await secretWriteRefusal(tab, resolveRef(uid), secret, value);
+        } catch (error) {
+          // A dead uid throws here; it is the same "this field was not filled"
+          // outcome, so report it the same way rather than as an op failure.
+          denial = String(error?.message || error);
+        }
+        if (denial) {
+          return {
+            ok: false,
+            message:
+              `Field ${i + 1} of ${fields.length} (uid "${uid}") was NOT filled: ${denial}` +
+              (i ? " Fields before it were already filled — take a fresh snapshot and continue from there." : "") +
+              (notes.length ? ` Notes from earlier fields: ${capNote(notes.join(" "))}` : ""),
+          };
+        }
+      }
       try {
         // Per field, so the box HOPS down the form as it is filled — with 25
         // fields that is the point: the user follows where the writing is.
@@ -6089,8 +6379,10 @@ async function performOp(message, stagingOrigin) {
           (async () => {
             const fieldNote = await fillField(
               resolveRef(uid),
-              String(field.value ?? ""),
+              value,
               Boolean(field.clear),
+              undefined,
+              secret,
             );
             if (fieldNote) notes.push(`Field ${i + 1} (uid "${uid}"): ${fieldNote}`);
           })(),

@@ -39,6 +39,7 @@ import {
   formatSubmission,
   MAX_CANVAS_CONTENT_CHARS,
 } from "../agent/canvasTools.js";
+import { redactSecretValues } from "../agent/postToolUseHook.js";
 import {
   DEFAULT_MCP_TOOL_GROUPS,
   normalizeMcpToolGroups,
@@ -1900,48 +1901,77 @@ export async function executeChatTurn(
           // isn't there" rather than "the user declined".
           onBrowser: async (requestData) => {
             const requestId = crypto.randomUUID();
-            emitRunEvent(runId, "browser", {
+            // Stored secrets riding THIS op, name → plaintext. Collected once:
+            // it decides whether the frame may be replayed, and it is the
+            // redaction set applied to the extension's reply below. NEVER
+            // logged, never audited, never put in a status label.
+            const secretValues: Record<string, string> = {};
+            if (requestData.secret && typeof requestData.secretText === "string") {
+              secretValues[requestData.secret.name] = requestData.secretText;
+            }
+            for (const field of requestData.fields ?? []) {
+              if (field.secret && typeof field.secretValue === "string") {
+                secretValues[field.secret.name] = field.secretValue;
+              }
+            }
+            const carriesSecret = Object.keys(secretValues).length > 0;
+            emitRunEvent(
               runId,
-              requestId,
-              op: requestData.op,
-              url: requestData.url ?? null,
-              name: requestData.name ?? null,
-              kind: requestData.kind ?? null,
-              uid: requestData.uid ?? null,
-              x: typeof requestData.x === "number" ? requestData.x : null,
-              y: typeof requestData.y === "number" ? requestData.y : null,
-              xFraction:
-                typeof requestData.xFraction === "number" ? requestData.xFraction : null,
-              yFraction:
-                typeof requestData.yFraction === "number" ? requestData.yFraction : null,
-              toUid: requestData.toUid ?? null,
-              toX: typeof requestData.toX === "number" ? requestData.toX : null,
-              toY: typeof requestData.toY === "number" ? requestData.toY : null,
-              toXFraction:
-                typeof requestData.toXFraction === "number" ? requestData.toXFraction : null,
-              toYFraction:
-                typeof requestData.toYFraction === "number" ? requestData.toYFraction : null,
-              text: requestData.text ?? null,
-              submit: Boolean(requestData.submit),
-              clear: Boolean(requestData.clear),
-              keystrokes: Boolean(requestData.keystrokes),
-              key: requestData.key ?? null,
-              modifiers: requestData.modifiers ?? null,
-              repeat: requestData.repeat ?? null,
-              direction: requestData.direction ?? null,
-              pixels: requestData.pixels ?? null,
-              accept: typeof requestData.accept === "boolean" ? requestData.accept : null,
-              promptText: requestData.promptText ?? null,
-              textGone: requestData.textGone ?? null,
-              timeoutS: requestData.timeoutS ?? null,
-              tabId: requestData.tabId ?? null,
-              fields: requestData.fields ?? null,
-              option: requestData.option ?? null,
-              fullPage: typeof requestData.fullPage === "boolean" ? requestData.fullPage : null,
-              offset: requestData.offset ?? null,
-              expand: typeof requestData.expand === "boolean" ? requestData.expand : null,
-              maxChars: typeof requestData.maxChars === "number" ? requestData.maxChars : null,
-            });
+              "browser",
+              {
+                runId,
+                requestId,
+                op: requestData.op,
+                url: requestData.url ?? null,
+                name: requestData.name ?? null,
+                kind: requestData.kind ?? null,
+                uid: requestData.uid ?? null,
+                x: typeof requestData.x === "number" ? requestData.x : null,
+                y: typeof requestData.y === "number" ? requestData.y : null,
+                xFraction:
+                  typeof requestData.xFraction === "number" ? requestData.xFraction : null,
+                yFraction:
+                  typeof requestData.yFraction === "number" ? requestData.yFraction : null,
+                toUid: requestData.toUid ?? null,
+                toX: typeof requestData.toX === "number" ? requestData.toX : null,
+                toY: typeof requestData.toY === "number" ? requestData.toY : null,
+                toXFraction:
+                  typeof requestData.toXFraction === "number" ? requestData.toXFraction : null,
+                toYFraction:
+                  typeof requestData.toYFraction === "number" ? requestData.toYFraction : null,
+                text: requestData.text ?? null,
+                // Secret input: the POLICY the extension re-enforces at the
+                // keyboard, and the plaintext on its OWN field. `secretText` is
+                // never `text`, so an extension that predates secret input types
+                // nothing rather than typing a credential unguarded.
+                secret: requestData.secret ?? null,
+                secretText: requestData.secretText ?? null,
+                submit: Boolean(requestData.submit),
+                clear: Boolean(requestData.clear),
+                keystrokes: Boolean(requestData.keystrokes),
+                key: requestData.key ?? null,
+                modifiers: requestData.modifiers ?? null,
+                repeat: requestData.repeat ?? null,
+                direction: requestData.direction ?? null,
+                pixels: requestData.pixels ?? null,
+                accept: typeof requestData.accept === "boolean" ? requestData.accept : null,
+                promptText: requestData.promptText ?? null,
+                textGone: requestData.textGone ?? null,
+                timeoutS: requestData.timeoutS ?? null,
+                tabId: requestData.tabId ?? null,
+                fields: requestData.fields ?? null,
+                option: requestData.option ?? null,
+                fullPage: typeof requestData.fullPage === "boolean" ? requestData.fullPage : null,
+                offset: requestData.offset ?? null,
+                expand: typeof requestData.expand === "boolean" ? requestData.expand : null,
+                maxChars: typeof requestData.maxChars === "number" ? requestData.maxChars : null,
+              },
+              // A frame carrying a plaintext secret is written to the live
+              // clients and NOT kept in the run's replay buffer: it would
+              // otherwise sit there for the rest of the turn and be re-sent
+              // verbatim to every reconnecting client.
+              carriesSecret ? { replay: false } : undefined,
+            );
             const answer = await awaitResponse(runId, requestId, BROWSER_OP_TTL_MS);
             if (answer === CANCELLED) {
               return {
@@ -1951,7 +1981,14 @@ export async function executeChatTurn(
                   "Ask the user to open Noah in the browser you should drive and attach a tab, then retry — there is no other way to reach their browser.",
               };
             }
-            const reply = answer as {
+            // Redact every secret this op carried out of the extension's reply
+            // BEFORE anything reads it — the audit row, the size gates, the
+            // model-facing result. A page that echoes a typed password into its
+            // own DOM (or a bridge note that quotes a field) would otherwise
+            // carry the plaintext straight into the turn.
+            const reply = (
+              carriesSecret ? redactSecretValues(answer, secretValues).value : answer
+            ) as {
               ok?: boolean;
               message?: string;
               snapshot?: string;
@@ -2090,6 +2127,14 @@ export async function executeChatTurn(
                     ? `key=${(requestData.modifiers ?? []).map((m) => `${m}+`).join("")}${requestData.key}${requestData.repeat && requestData.repeat > 1 ? ` x${requestData.repeat}` : ""}`
                     : "",
                   requestData.fields ? `fields=${requestData.fields.length}` : "",
+                  // Browser secret input: the NAME only. The value never
+                  // reaches an admin-visible row, and neither does `text`.
+                  requestData.secret ? `secret=${requestData.secret.name}` : "",
+                  requestData.fields?.some((f) => f.secret)
+                    ? `secrets=[${requestData.fields
+                        .flatMap((f) => (f.secret ? [f.secret.name] : []))
+                        .join(",")}]`
+                    : "",
                   requestData.option ? `option=${requestData.option.slice(0, 80)}` : "",
                   // A type that REPLACED what the field held, rather than
                   // adding to it — the destructive half of the same op.

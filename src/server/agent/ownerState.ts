@@ -6,6 +6,7 @@ import type {
 } from "../types.js";
 import { groupAgentCaptureAllowed } from "../groupAgents.js";
 import { personalAgentMemoryRoot } from "../personalAgents.js";
+import type { BrowserSecretPolicy } from "../secretPolicy.js";
 import type { Store } from "../store.js";
 import { MAX_PERSONAL_AGENTS } from "../store.js";
 
@@ -47,6 +48,14 @@ export interface OwnerState {
   secretNames: string[];
   /** Subset of `secretNames` opted into agent-shell exposure (per-key toggle). */
   shellExposedSecretNames: string[];
+  /**
+   * Secrets opted into BROWSER INPUT (per-key 브라우저 입력 toggle), with the
+   * hosts each may be typed on and whether it is password-fields-only. Values
+   * never included — the model gets the NAME to pass as `secretName`. Only
+   * currently-usable policies appear, so both metacognition surfaces can state
+   * them as fact.
+   */
+  browserSecrets: BrowserSecretPolicy[];
   /** Groups the owner belongs to, with role + shared-repo flag per group. */
   groups: UserGroupMembership[];
   /** Number of general (work/code) git repos the owner has registered. */
@@ -102,6 +111,7 @@ export function summarizeOwnerState(
     gitTokenSet: Boolean(store.getGitToken(avatarUserId)),
     secretNames: store.listUserSecretNames(avatarUserId),
     shellExposedSecretNames: store.listShellExposedSecretNames(avatarUserId),
+    browserSecrets: store.listBrowserSecretPolicies(avatarUserId),
     groups: store.listUserGroups(avatarUserId),
     // Lazy: only describe_system reads these; the buildPrompt/runClaudeAgent path
     // never accesses them, so defer the store queries until a consumer reads them.
@@ -188,6 +198,7 @@ export function emptyOwnerState(store: Store, config: AppConfig): OwnerState {
     gitTokenSet: false,
     secretNames: [],
     shellExposedSecretNames: [],
+    browserSecrets: [],
     groups: [],
     gitRepoCount: 0,
     openRequestCount: 0,

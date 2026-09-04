@@ -6,6 +6,13 @@
 // operation the server already authorized and returns whatever the extension
 // says. The trust boundary is this page's authenticated session — which is why
 // the extension only accepts messages from this origin.
+//
+// ONE exception to "just a relay": an op may carry a stored secret's PLAINTEXT
+// (`secretText` / a field's `secretValue`). It passes straight through to the
+// extension and must never be logged, rendered, or written into app state —
+// and it is only handed over once the installed build is known to understand
+// it (`extensionSupportsSecretInput`), because an older build would silently
+// type nothing.
 
 import { defaultAllowlistFor } from "../../../shared/originPatterns";
 
@@ -63,6 +70,31 @@ export interface BridgeReply {
   storageKind?: "local" | "session";
 }
 
+/**
+ * Policy the EXTENSION re-enforces at the keyboard before a stored secret is
+ * typed — the server only pre-checked the last tab URL it happened to know, and
+ * the tab may have moved since. Mirrors the server's `BrowserSecretPolicy`;
+ * this page neither reads nor edits it, it only relays it.
+ */
+export interface BridgeSecretPolicy {
+  name: string;
+  hosts: string[];
+  passwordOnly: boolean;
+}
+
+/**
+ * One `fill_form` field. A SECRET field carries `value: ""` plus `secret` and
+ * `secretValue`, so a build that predates secret input writes an empty string
+ * instead of a credential.
+ */
+export interface BridgeFormField {
+  uid: string;
+  value: string;
+  clear?: boolean;
+  secret?: BridgeSecretPolicy;
+  secretValue?: string;
+}
+
 export interface BridgeOperation {
   /**
    * The parked request's id, forwarded so the EXTENSION can coalesce duplicate
@@ -116,6 +148,19 @@ export interface BridgeOperation {
   toXFraction?: number | null;
   toYFraction?: number | null;
   text?: string | null;
+  /**
+   * `type` only: enter a STORED SECRET instead of `text`. The model named the
+   * secret and the server resolved it; this is the policy the extension re-checks
+   * (allowed host, password-field shape) before a single key is sent.
+   */
+  secret?: BridgeSecretPolicy;
+  /**
+   * `type` only: the secret's plaintext. Deliberately NOT carried in `text` — an
+   * extension older than SECRET_INPUT_MIN_EXTENSION_VERSION ignores the field and
+   * types NOTHING, which is a harmless no-op; typing a credential unguarded into
+   * whatever the page focused is not.
+   */
+  secretText?: string;
   submit?: boolean;
   /** type only: replace the field's existing content instead of inserting into it. */
   clear?: boolean;
@@ -130,7 +175,7 @@ export interface BridgeOperation {
   textGone?: string | null;
   timeoutS?: number | null;
   tabId?: string | null;
-  fields?: { uid: string; value: string; clear?: boolean }[] | null;
+  fields?: BridgeFormField[] | null;
   option?: string | null;
   fullPage?: boolean | null;
   offset?: number | null;
@@ -291,6 +336,33 @@ export function bridgeVersionVerdict(
     if (cmp !== null && cmp >= 0) return "compatible";
   }
   return "outdated";
+}
+
+/**
+ * First extension build that understands `secretText` / `secretValue`. Below it
+ * the fields are simply unknown keys: the build types NOTHING and answers as if
+ * it succeeded, so the run would stall on a login that never happened. Raising
+ * `BROWSER_EXTENSION_MIN_COMPATIBLE` for that would order a reinstall on every
+ * install for a feature most runs never touch — so the gate lives HERE, on the
+ * one op that actually needs it, and everything else keeps working.
+ *
+ * KEEP THIS DECLARATION ON ONE LINE. `tests/infra.test.ts` pins it against the
+ * bundled manifest version by REGEX over this file's text — it compiles under
+ * the root NodeNext tsconfig, which excludes `src/client`, so it cannot import
+ * the value. Reformatting or renaming the line fails that test, not this one.
+ */
+export const SECRET_INPUT_MIN_EXTENSION_VERSION = "0.28.0";
+
+/**
+ * May the installed build be handed a stored secret? Unknown or unparseable
+ * versions are a NO (pre-0.4.0 builds report none), the same fail-toward-refusal
+ * direction `bridgeVersionVerdict` takes — a wrong yes hands a credential to a
+ * build that drops it on the floor.
+ */
+export function extensionSupportsSecretInput(version: string | undefined | null): boolean {
+  if (!version) return false;
+  const cmp = compareBridgeVersions(version, SECRET_INPUT_MIN_EXTENSION_VERSION);
+  return cmp !== null && cmp >= 0;
 }
 
 /**

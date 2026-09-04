@@ -1370,6 +1370,188 @@ describe("group trust & visibility", () => {
     expect(store.listShellExposedSecretNames(ownerId)).toEqual([]);
   });
 
+  // ---- per-secret browser input (브라우저 입력) ----
+  it("browser input defaults off, round-trips the policy, and keeps hosts when disabled", () => {
+    const { store, ownerId } = makeStore("bs1");
+    store.setUserSecret(ownerId, "LOGIN_PW", "v1");
+    store.setUserSecret(ownerId, "ALPHA_PW", "v2");
+    expect(store.listBrowserSecretPolicies(ownerId)).toEqual([]);
+    expect(store.getUserById(ownerId)?.browserSecrets).toEqual([]);
+
+    expect(
+      store.setSecretBrowserPolicy(ownerId, "LOGIN_PW", {
+        enabled: true,
+        hosts: ["jira.corp.com", "login.corp.com"],
+        passwordOnly: true,
+      }),
+    ).toBe(true);
+    expect(store.listBrowserSecretPolicies(ownerId)).toEqual([
+      { name: "LOGIN_PW", hosts: ["jira.corp.com", "login.corp.com"], passwordOnly: true },
+    ]);
+    // toUser carries the POLICY (never a value) so the settings UI can render it.
+    expect(store.getUserById(ownerId)?.browserSecrets).toEqual([
+      { name: "LOGIN_PW", hosts: ["jira.corp.com", "login.corp.com"], passwordOnly: true },
+    ]);
+
+    // passwordOnly:false round-trips as the widened (any text field) policy.
+    store.setSecretBrowserPolicy(ownerId, "ALPHA_PW", {
+      enabled: true,
+      hosts: ["wiki.corp.com"],
+      passwordOnly: false,
+    });
+    // Ordered by name, so ALPHA_PW comes first.
+    expect(store.listBrowserSecretPolicies(ownerId).map((p) => p.name)).toEqual([
+      "ALPHA_PW",
+      "LOGIN_PW",
+    ]);
+    expect(store.listBrowserSecretPolicies(ownerId)[0].passwordOnly).toBe(false);
+
+    // Replacing the VALUE keeps the policy (the flag rides the secret row).
+    store.setUserSecret(ownerId, "LOGIN_PW", "v1b");
+    expect(store.listBrowserSecretPolicies(ownerId).map((p) => p.name)).toContain("LOGIN_PW");
+
+    // Disabling with NO host list drops it from the list but KEEPS hosts/flag on
+    // the row. Repeat it: the second disable must not wipe the allowlist either
+    // (listBrowserSecretPolicies can't see a disabled row, so preservation has to
+    // live in the write, not in a caller that re-reads it).
+    expect(
+      store.setSecretBrowserPolicy(ownerId, "LOGIN_PW", {
+        enabled: false,
+        hosts: [],
+        passwordOnly: true,
+      }),
+    ).toBe(true);
+    expect(store.listBrowserSecretPolicies(ownerId).map((p) => p.name)).toEqual(["ALPHA_PW"]);
+    store.setSecretBrowserPolicy(ownerId, "LOGIN_PW", { enabled: false, hosts: [], passwordOnly: true });
+    // Re-enabling with an empty list is refused at the route, so restore the way
+    // the client does — send the remembered hosts back.
+    store.setSecretBrowserPolicy(ownerId, "LOGIN_PW", {
+      enabled: true,
+      hosts: ["jira.corp.com", "login.corp.com"],
+      passwordOnly: true,
+    });
+    expect(store.listBrowserSecretPolicies(ownerId)[1]).toEqual({
+      name: "LOGIN_PW",
+      hosts: ["jira.corp.com", "login.corp.com"],
+      passwordOnly: true,
+    });
+
+    // A widened policy also survives disable→disable→re-enable untouched.
+    store.setSecretBrowserPolicy(ownerId, "ALPHA_PW", { enabled: false, hosts: [], passwordOnly: true });
+    store.setSecretBrowserPolicy(ownerId, "ALPHA_PW", { enabled: false, hosts: [], passwordOnly: true });
+    store.setSecretBrowserPolicy(ownerId, "ALPHA_PW", {
+      enabled: true,
+      hosts: ["wiki.corp.com"],
+      passwordOnly: false,
+    });
+    expect(store.listBrowserSecretPolicies(ownerId)[0]).toEqual({
+      name: "ALPHA_PW",
+      hosts: ["wiki.corp.com"],
+      passwordOnly: false,
+    });
+
+    // Unknown secret → false (nothing to flag).
+    expect(
+      store.setSecretBrowserPolicy(ownerId, "NOPE", { enabled: true, hosts: ["a.com"], passwordOnly: true }),
+    ).toBe(false);
+    // Deleting the secret takes the policy with it.
+    store.deleteUserSecret(ownerId, "ALPHA_PW");
+    expect(store.listBrowserSecretPolicies(ownerId).map((p) => p.name)).toEqual(["LOGIN_PW"]);
+  });
+
+  it("browser-input reads fail closed on reserved names, empty hosts and malformed JSON", () => {
+    const { store, ownerId } = makeStore("bs2");
+    type WithDb = { db: { prepare(sql: string): { run(...params: unknown[]): unknown } } };
+    const db = (store as unknown as WithDb).db;
+
+    // A reserved git/SSH name can never be browser-typed. The route refuses to
+    // set one, so plant the flag directly: a hand-edited DB must not widen the gate.
+    store.setUserSecret(ownerId, "GIT_TOKEN", "t");
+    db.prepare(
+      "UPDATE user_secrets SET browser_expose = 1, browser_hosts = ? WHERE user_id = ? AND name = 'GIT_TOKEN'",
+    ).run(JSON.stringify(["github.corp.com"]), ownerId);
+    expect(store.listBrowserSecretPolicies(ownerId)).toEqual([]);
+
+    // Enabled with NO hosts advertises a secret the bridge would always refuse.
+    store.setUserSecret(ownerId, "EMPTY_PW", "v");
+    store.setSecretBrowserPolicy(ownerId, "EMPTY_PW", { enabled: true, hosts: [], passwordOnly: true });
+    expect(store.listBrowserSecretPolicies(ownerId)).toEqual([]);
+
+    // Malformed hosts JSON skips the row rather than guessing which sites were meant.
+    store.setUserSecret(ownerId, "BROKEN_PW", "v");
+    db.prepare(
+      "UPDATE user_secrets SET browser_expose = 1, browser_hosts = '{oops' WHERE user_id = ? AND name = 'BROKEN_PW'",
+    ).run(ownerId);
+    expect(store.listBrowserSecretPolicies(ownerId)).toEqual([]);
+
+    // An invalid host inside an otherwise fine list is all-or-nothing too.
+    store.setUserSecret(ownerId, "WILD_PW", "v");
+    db.prepare(
+      "UPDATE user_secrets SET browser_expose = 1, browser_hosts = ? WHERE user_id = ? AND name = 'WILD_PW'",
+    ).run(JSON.stringify(["*.corp.com", "jira.corp.com"]), ownerId);
+    expect(store.listBrowserSecretPolicies(ownerId)).toEqual([]);
+
+    // A legacy row whose browser_password_only was never written reads as the
+    // SAFE end of the toggle (password fields only).
+    store.setUserSecret(ownerId, "LEGACY_PW", "v");
+    db.prepare(
+      "UPDATE user_secrets SET browser_expose = 1, browser_hosts = ?, browser_password_only = NULL " +
+        "WHERE user_id = ? AND name = 'LEGACY_PW'",
+    ).run(JSON.stringify(["jira.corp.com"]), ownerId);
+    expect(store.listBrowserSecretPolicies(ownerId)).toEqual([
+      { name: "LEGACY_PW", hosts: ["jira.corp.com"], passwordOnly: true },
+    ]);
+  });
+
+  it("adds the browser-input columns to an EXISTING deployment's user_secrets table", () => {
+    // Deployment is a separate corporate box, so the columns must arrive by
+    // ALTER TABLE on a live DB — a fresh-install-only schema would ship broken.
+    const dataDir = path.join(tempDir, "bs-migration");
+    const open = () =>
+      createServices({ dataDir, agentRuntime: "local", sessionSecret: "bs" }).store;
+    type WithDb = {
+      db: {
+        prepare(sql: string): { run(...p: unknown[]): unknown; all(...p: unknown[]): unknown };
+      };
+    };
+    const dbOf = (store: unknown) => (store as unknown as WithDb).db;
+    const columnsOf = (store: unknown) =>
+      (dbOf(store).prepare("PRAGMA table_info(user_secrets)").all() as { name: string }[]).map(
+        (c) => c.name,
+      );
+
+    const first = open();
+    const owner = first.createUser({ username: "bsowner", displayName: "Owner", password: "password123" });
+    first.setUserSecret(owner.id, "LOGIN_PW", "v");
+    // Reproduce the pre-feature shape: a deployment DB where the three columns
+    // simply do not exist yet.
+    for (const column of ["browser_expose", "browser_hosts", "browser_password_only"]) {
+      dbOf(first).prepare(`ALTER TABLE user_secrets DROP COLUMN ${column}`).run();
+    }
+    expect(columnsOf(first)).not.toContain("browser_expose");
+    first.close();
+
+    // Reopening the SAME dataDir runs migrate() → addColumnIfMissing.
+    const second = open();
+    expect(columnsOf(second)).toEqual(
+      expect.arrayContaining(["browser_expose", "browser_hosts", "browser_password_only"]),
+    );
+    // The pre-existing secret survives, defaults to off, and can be opted in.
+    expect(second.listUserSecretNames(owner.id)).toEqual(["LOGIN_PW"]);
+    expect(second.listBrowserSecretPolicies(owner.id)).toEqual([]);
+    expect(
+      second.setSecretBrowserPolicy(owner.id, "LOGIN_PW", {
+        enabled: true,
+        hosts: ["jira.corp.com"],
+        passwordOnly: true,
+      }),
+    ).toBe(true);
+    expect(second.listBrowserSecretPolicies(owner.id)).toEqual([
+      { name: "LOGIN_PW", hosts: ["jira.corp.com"], passwordOnly: true },
+    ]);
+    second.close();
+  });
+
   // ---- shared (communal) account ----
   it("sharedAccount defaults off, round-trips through updateProfile, and reads via isSharedAccount", () => {
     const { store, ownerId } = makeStore("sa1");

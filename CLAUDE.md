@@ -126,6 +126,22 @@ These are the invariants the project is built around. New work should reinforce 
   browser tools instead: it runs in the user's session, so the edit is attributable, visible, and
   undoable, and the owner's PAT never mutates anything unattended. Both metacognition surfaces branch on
   `browserEnabled` — never offer a route the run does not actually have.
+- **A stored secret reaches a login form by NAME, never by value — and the model never sees it.** The
+  owner opts a vault secret into 브라우저 입력 per secret (`user_secrets.browser_expose` + EXACT allowed
+  hosts + `browser_password_only`, `PATCH /api/me/secrets/:name {browser}`); the avatar passes
+  `secretName` to `mcp__browser__type`/`fill_form` instead of `value`, the server resolves the value, and
+  the extension types it. Five guards are each load-bearing: per-secret opt-in with exact hostnames (no
+  wildcards; reserved git/SSH names never qualify), the host check at BOTH ends (server pre-checks the last
+  tab URL it saw; the extension re-checks the live tab AND the element's own frame document, failing
+  closed), password-field-only enforced in the extension, a per-(site, `secret`) consent popup the server
+  cannot bypass, and never-quoted/always-redacted handling (LENGTH-only verification because Chromium masks
+  a password field's AX value as one `•` per character; the plaintext rides `secretText`/`secretValue` on a
+  TRANSIENT SSE frame that is never replayed, never `text`; the reply is redacted and the value joins the
+  PostToolUse redaction set; audit rows carry the NAME only). The degrade is client-side, not a floor
+  bump: an extension below `SECRET_INPUT_MIN_EXTENSION_VERSION` never receives the value. One-time codes
+  and payment details stay off-limits on every surface. Both metacognition surfaces list the enabled
+  names + sites and branch on whether the bridge is connected. Mechanics →
+  `docs/architecture/browser-bridge/actions.md`, `secrets-ssh.md`.
 - **Tool permissions go through ONE gate:** the `PreToolUse` hook (`buildPreToolUseHook`). The SDK's
   `canUseTool`/`onUserDialog` don't fire headlessly. The `mcp__`-prefix auto-allow fires BEFORE the owner
   check, so every in-process MCP server MUST self-gate in its handlers.

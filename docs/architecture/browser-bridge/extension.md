@@ -53,6 +53,31 @@
   and once under `Software\Policies\Microsoft\Edge` (Linux: `/etc/opt/chrome` vs `/etc/opt/edge`); the
   build script prints both. User-facing guidance resolves the extensions page at runtime instead of
   hardcoding `chrome://` (`extensionsPageUrl()` in `lib/browserBridge.ts`).
+- **Chromium facts the SECRET write rests on, measured rather than assumed**
+  (`tests/visual/password-facts.spec.ts`, run with
+  `node node_modules/@playwright/test/cli.js test tests/visual/password-facts.spec.ts` — local http
+  servers + raw CDP, no dev server). A password field's AX value reads back as one `•` per character
+  through BOTH `getPartialAXTree` and `getFullAXTree`, which is what makes LENGTH-only verification a
+  real signal and keeps the plaintext out of the snapshot the same op returns; `DOM.describeNode` shows
+  the `type=password` shape and no value; a plain text input reads back PLAINTEXT (why `passwordOnly`
+  defaults on); and `DOMSnapshot.captureSnapshot`'s `inputValue` DOES carry the plaintext — the one
+  allowlisted read that would leak it, so only its `documentURL` is ever touched. The frame half is the
+  one that measured against intuition: `captureSnapshot` on the root session attributes every
+  SAME-PROCESS node to its own document (so a sibling-host iframe inside an allowed page is caught), but
+  a CROSS-site frame is an OOPIF whose document is absent from that capture AND whose backendNodeIds are
+  per-PROCESS — the same number names an unrelated node in the top document, so attributing an OOPIF
+  element through the root would answer with the TOP page's URL, precisely the host the secret is allowed
+  on. Hence `refDocumentUrl` asks a `sessionId`-carrying ref's OWN session (`Page.getFrameTree`) and only
+  falls to the capture for root-session refs — and skips it entirely when the root frame tree has no
+  children, which is the ordinary single-frame login page. Probing this over raw CDP is sound here
+  because every method involved is already on `CDP_ALLOWLIST` and already proven over `chrome.debugger`
+  by a shipped op; a probe asking whether a method is REACHABLE must use `chrome.debugger` instead (the
+  `DOMStorage` lesson in contract.md).
+- **Site isolation has to be turned ON in a Playwright probe about frames.** Desktop Chrome and Edge —
+  the fleet — isolate cross-site frames by default; a bare `chromium.launch()` does not, so the same
+  fixture silently measures a same-process frame and the OOPIF branch goes untested. `--site-per-process`
+  (plus `--host-resolver-rules=MAP *.test 127.0.0.1` for real cross-host iframes) is what makes the probe
+  measure the browser users actually run.
 - **Verifying extension behavior locally:** Playwright's Chromium loads the unpacked extension
   (`chromium.launchPersistentContext(dir, { channel: "chromium", args: ["--disable-extensions-except=<extension/>",
   "--load-extension=<extension/>"] })`), which drives real `chrome-extension://` pages and settles what a

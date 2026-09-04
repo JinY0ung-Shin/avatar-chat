@@ -37,6 +37,7 @@ function userOf(over: Partial<User> = {}): User {
     visibility: "group",
     roles: [],
     secretNames: [],
+    browserSecrets: [],
     knowledgeRepo: "",
     gitTokenSet: false,
     sshPublicKey: "",

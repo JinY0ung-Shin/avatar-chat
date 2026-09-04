@@ -185,6 +185,23 @@ Companion to the client-area philosophy in [`../../src/client/CLAUDE.md`](../../
   mcpToolGroups}Default` then PUT in the background, toast only on failure. New panes seed from these.
 - Some settings cards (profile/visibility/secrets) save WITHOUT a full reload to avoid wiping unsaved form
   text — preserve in-place updates there.
+- **A `secret`-carrying browser op is version-gated CLIENT-side, and the value passes straight through.**
+  `handleBrowserOp` (`lib/chat.ts`) probes `readAllowedOrigins()` for the INSTALLED build before forwarding
+  anything that has `secret` (or a field `secret`); below `SECRET_INPUT_MIN_EXTENSION_VERSION` (`0.28.0`,
+  `lib/browserBridge.ts`) it answers `/api/chat/respond` with an English update instruction and never sends
+  `secretText`/`secretValue`. The gate lives HERE rather than in `BROWSER_EXTENSION_MIN_COMPATIBLE` (still
+  `0.6.0`) because an old build types NOTHING and reports success — a silent no-op on one op, not a broken
+  contract, so ordering a fleet-wide reinstall would be the wrong trade. An UNREACHABLE extension keeps its
+  own "not reachable" reason instead of a version story it can't support. The plaintext never reaches
+  `setStatus`, the pane store, or a console: the Korean labels (`브라우저에 시크릿을 입력하는 중…` /
+  `브라우저 폼을 채우는 중(시크릿 포함)…`) say only THAT one rides along.
+- **The 시크릿 card's `브라우저 입력` control never saves on the tick.** Ticking it opens the inline
+  허용 사이트 editor; the `PATCH /api/me/secrets/:name` `{ browser: { enabled, hosts, passwordOnly } }` waits
+  for 저장, because the allowed hosts ARE the policy and an enabled secret with none would be meaningless.
+  Host syntax is deliberately NOT mirrored client-side (`normalizeBrowserSecretHosts` on the server is the
+  single, all-or-nothing set of rules) — the input is only split on comma/space/newline and the server's
+  Korean `apiError` is surfaced verbatim via `notify`. Reserved git/SSH names get no control at all
+  (`isBrowserExposableSecret`), the same line the 셸 노출 toggle draws.
 - **Splitting a multi-tab view into per-tab components: ALWAYS-MOUNT + `active` prop, never `{#if tab}`
   around the child.** In a monolithic tab view, `{#if settingsTab===…}` only swaps the *template* branch
   while the single `<script>`'s `let` form vars persist across tab switches. Rendering each new child

@@ -22,8 +22,25 @@ import {
   normalizeModelVisionPolicy,
   type ModelVisionPolicy,
 } from "../modelVisionPolicy.js";
+import {
+  isBrowserExposableSecret,
+  normalizeBrowserSecretHosts,
+  type BrowserSecretPolicy,
+} from "../secretPolicy.js";
 import type { User } from "../types.js";
 import { now, type Constructor, type StoreBase } from "./internal.js";
+
+/** `user_secrets.browser_hosts` → the raw parsed value, or null when unusable. */
+function parseHostsJson(raw: string | null): unknown {
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
 export type AppSecretState =
   | { status: "missing" }
@@ -204,6 +221,88 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
           "UPDATE user_secrets SET shell_expose = ? WHERE user_id = ? AND name = ?",
         )
         .run(expose ? 1 : 0, userId, name);
+      return result.changes > 0;
+    }
+
+    /**
+     * The owner's BROWSER-INPUT policies (브라우저 입력): the secrets that may be
+     * typed into the owner's own browser by NAME, with the exact hosts allowed
+     * and whether the target must be a password field.
+     *
+     * Only rows that are enabled AND actually usable come back, because every
+     * consumer (prompt, `describe_system`, the browser tool gate, the settings
+     * UI) reads this list as "these can be typed right now":
+     *  - `browser_expose = 1`;
+     *  - the name is not a reserved git/SSH name (defence in depth — the route
+     *    refuses to set one, but a hand-edited DB must not widen the gate);
+     *  - at least one parsed host, since an empty allowlist can never match a tab
+     *    and would otherwise advertise a secret the bridge always refuses.
+     * A malformed `browser_hosts` JSON blob skips the row for the same reason —
+     * failing closed beats guessing which sites the owner meant.
+     */
+    listBrowserSecretPolicies(userId: string): BrowserSecretPolicy[] {
+      const rows = this.db
+        .prepare(
+          "SELECT name, browser_hosts, browser_password_only FROM user_secrets " +
+            "WHERE user_id = ? AND browser_expose = 1 ORDER BY name",
+        )
+        .all(userId) as {
+        name: string;
+        browser_hosts: string | null;
+        browser_password_only: number | null;
+      }[];
+      const out: BrowserSecretPolicy[] = [];
+      for (const row of rows) {
+        if (!isBrowserExposableSecret(row.name)) {
+          continue;
+        }
+        const hosts = normalizeBrowserSecretHosts(parseHostsJson(row.browser_hosts));
+        if (!hosts?.length) {
+          continue;
+        }
+        out.push({
+          name: row.name,
+          hosts,
+          // Legacy/NULL reads as the SAFE end of the toggle (password fields only).
+          passwordOnly: row.browser_password_only !== 0,
+        });
+      }
+      return out;
+    }
+
+    /**
+     * Set a stored secret's browser-input policy. Returns false when the secret
+     * doesn't exist (the policy rides the secret row; the value is untouched).
+     *
+     * Disabling keeps the hosts and the password-only flag so re-enabling
+     * restores what the owner configured — and it does so HERE rather than at the
+     * caller, because `listBrowserSecretPolicies` only reports ENABLED rows: a
+     * route that re-read the policy to preserve it would find nothing on the
+     * second disable and silently wipe the allowlist. So an empty host list on a
+     * disable flips `browser_expose` alone; anything else is an explicit edit.
+     */
+    setSecretBrowserPolicy(
+      userId: string,
+      name: string,
+      policy: { enabled: boolean; hosts: string[]; passwordOnly: boolean },
+    ): boolean {
+      const result =
+        !policy.enabled && !policy.hosts?.length
+          ? this.db
+              .prepare("UPDATE user_secrets SET browser_expose = 0 WHERE user_id = ? AND name = ?")
+              .run(userId, name)
+          : this.db
+              .prepare(
+                "UPDATE user_secrets SET browser_expose = ?, browser_hosts = ?, browser_password_only = ? " +
+                  "WHERE user_id = ? AND name = ?",
+              )
+              .run(
+                policy.enabled ? 1 : 0,
+                JSON.stringify(policy.hosts),
+                policy.passwordOnly ? 1 : 0,
+                userId,
+                name,
+              );
       return result.changes > 0;
     }
 

@@ -70,6 +70,9 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
         // Only the names — the encrypted values never leave the server.
         secretNames,
         shellExposedSecretNames: this.listShellExposedSecretNames(row.id),
+        // Policy only (name + allowed hosts + password-field flag) — the value
+        // stays server-side like every other secret.
+        browserSecrets: this.listBrowserSecretPolicies(row.id),
         sshPublicKey: row.ssh_public_key ?? null,
         groups: this.listUserGroups(row.id),
         experimentalFeatures: normalizeExperimentalFeatures(

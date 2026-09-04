@@ -21,6 +21,8 @@ const BUNDLE_FILES = [
   "background.js",
   // background.js imports this at load; omitting it bricks the worker outright.
   "axtree.js",
+  // Same: the pure half of secret input, imported at load by background.js.
+  "secretInput.js",
   "options.html",
   "options.js",
   "options.css",
