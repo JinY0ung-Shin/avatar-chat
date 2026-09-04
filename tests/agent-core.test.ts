@@ -4119,7 +4119,10 @@ describe("buildPrompt", () => {
     expect(withSecret).toContain("pass its NAME as `secretName`");
     expect(withSecret).toContain("[REDACTED:<NAME>]");
     expect(withSecret).toContain("Never type a credential literally");
-    expect(withSecret).toContain("may decline the confirmation popup");
+    expect(withSecret).toContain("may decline the one-time confirmation popup");
+    // The popup is asked ONCE PER BROWSER SESSION, not once per site — the model
+    // must not tell the user to expect one on every login page.
+    expect(withSecret).toContain("one approval covers every allowed site until the browser closes");
     // Still forbidden, whatever the owner enabled.
     expect(withSecret).toContain("One-time codes (OTP/2FA) and payment details remain off-limits");
 

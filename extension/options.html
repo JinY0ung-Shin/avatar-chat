@@ -62,21 +62,24 @@
         </div>
 
         <div class="tool">
-          <p class="tool-label">이 세션에 사이트 데이터 접근 · 시크릿 입력을 허용한 사이트</p>
+          <p class="tool-label">이 세션에 허용한 사이트 데이터 접근 · 시크릿 입력</p>
           <ul id="data-grants" class="grant-list"></ul>
           <p id="data-grants-empty" class="grant-empty" hidden>
-            이 세션에 데이터 접근 · 시크릿 입력을 허용한 사이트가 없습니다.
+            이 세션에 허용한 데이터 접근 · 시크릿 입력이 없습니다.
           </p>
           <div class="actions">
             <button id="data-grants-clear" type="button" class="secondary" hidden>모두 취소</button>
           </div>
           <p class="hint">
             아바타가 <code>read_cookies</code>로 쿠키를, <code>read_storage</code>로 localStorage ·
-            sessionStorage 값을 읽을 때, 그리고 저장해 둔 시크릿을 로그인 칸에 입력할 때(<strong>시크릿
-            입력</strong>), 사이트별·종류별로 한 번 허용하면 이 브라우저 세션 동안 같은
-            사이트의 같은 종류는 다시 묻지 않습니다(한 종류를 허용해도 다른 종류는 따로 묻습니다). 각
-            사이트에 허용된 종류는 이름 옆에 표시되며, 취소는 그 사이트의 모든 종류를 한 번에 취소합니다.
-            허용한 사이트는 브라우저를 닫으면 모두 사라집니다.
+            sessionStorage 값을 읽을 때는 <strong>사이트별·종류별로</strong> 한 번 허용하면 이 브라우저
+            세션 동안 같은 사이트의 같은 종류는 다시 묻지 않습니다(한 종류를 허용해도 다른 종류는 따로
+            묻습니다). 저장해 둔 시크릿을 로그인 칸에 입력하는 것(<strong>시크릿 입력</strong>)은
+            사이트별이 아니라 <strong>브라우저 세션마다 한 번</strong>만 물어보고, 그 한 번의 허용이
+            설정에서 시크릿마다 허용해 둔 <strong>모든 사이트</strong>에 적용됩니다 — 목록에는
+            <code>모든 허용 사이트</code> 한 줄로 표시됩니다(입력 가능한 사이트가 넓어지는 것은
+            아닙니다). 각 줄에 허용된 종류는 이름 옆에 표시되며, 취소는 그 줄의 모든 종류를 한 번에
+            취소합니다. 허용은 브라우저를 닫으면 모두 사라집니다.
           </p>
           <p class="status-line" id="data-grants-status" role="status" aria-live="polite"></p>
         </div>

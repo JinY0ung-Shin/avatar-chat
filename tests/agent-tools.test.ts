@@ -2198,6 +2198,9 @@ describe("system tools (avatar system management)", () => {
     );
     expect(connected).toContain("pass the NAME as `secretName`");
     expect(connected).toContain("[REDACTED:<NAME>]");
+    // The consent popup is once per browser SESSION, not once per site: the
+    // self-report must not promise a prompt on every login page.
+    expect(connected).toContain("one approval covers every allowed site until the browser closes");
     // The browser-control line points at it from the tool side.
     expect(connected).toContain("type and fill_form additionally accept `secretName`");
     // The value itself never appears anywhere in the self-report.

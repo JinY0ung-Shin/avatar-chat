@@ -30,6 +30,29 @@
 /** Consent kind for a secret write, in the unified per-(host, type) grant store. */
 export const SECRET_CONSENT_TYPE = "secret";
 
+/**
+ * The grant KEY a `secret` approval is remembered under — a sentinel, not a host.
+ *
+ * Secret-input consent is SESSION-WIDE: the first secret typed in a browser
+ * session prompts, and that one approval covers every site the owner allowed,
+ * until they revoke it in the options page or close the browser. The cookie and
+ * storage kinds stay PER HOST in the very same store; only this kind collapses
+ * to one row, because the question it asks ("may the avatar type my stored
+ * secrets in this browser session?") is not a per-site question — the per-site
+ * decision was already made in Noah's settings, where the owner named the exact
+ * hosts each secret may be typed on, and that allowlist is re-checked at the
+ * keyboard on every single write.
+ *
+ * The popup still SHOWS the real host, so the approval is given with the actual
+ * page in view; only the memory is keyed here. Nothing derives this key from a
+ * page, so no document can steer a write into another host's grant slot: the
+ * `secret` type has exactly one slot. A page whose hostname were literally "*"
+ * (the URL parser does allow it) would share this ROW in the options list, but
+ * only under its own `cookies`/`local`/`session` type — grants are per type, and
+ * revoking the row drops all of them together.
+ */
+export const SECRET_SESSION_GRANT_HOST = "*";
+
 /** Hosts named in one refusal before the list is elided — a policy may hold 20. */
 const REFUSAL_HOSTS_MAX = 10;
 
@@ -211,8 +234,8 @@ export const SECRET_CONSENT_DECLINED =
 /** No answer inside the popup's budget. Unlike a decline, this one is retryable. */
 export const SECRET_CONSENT_UNANSWERED =
   "The user did not answer the secret-input prompt in time, so NOTHING was typed. Tell the user a " +
-  "confirmation popup appears in their browser the first time a secret is typed on a site, and retry when " +
-  "they are ready.";
+  "confirmation popup appears in their browser the first time a secret is typed in this browser session " +
+  "(one approval then covers every allowed site), and retry when they are ready.";
 
 /** Another consent popup already holds the single slot. */
 export const SECRET_CONSENT_ALREADY_OPEN =

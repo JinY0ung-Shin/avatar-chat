@@ -70,8 +70,10 @@
   `browser` frame (written to live clients, never pushed into the run's replay buffer) on a NEW field
   (`secretText` / per-field `secretValue`, never `text`/`value`, so a pre-0.28.0 extension types
   nothing) → the client relay → the extension's `Input.insertText`. The host allowlist is re-checked at
-  BOTH ends and the extension additionally enforces the password-field shape plus a per-(site, secret)
-  consent popup the server cannot bypass; the reply is redacted server-side and the value joins the
+  BOTH ends and the extension additionally enforces the password-field shape plus a
+  once-per-browser-session `secret` consent popup the server cannot bypass (one approval covers every
+  allowed site — the per-site limit is the owner's own host allowlist, re-checked at the keyboard on
+  every write, not the popup); the reply is redacted server-side and the value joins the
   PostToolUse redaction set, so any later echo comes back `[REDACTED:<NAME>]`. Wire/extension mechanics
   → [`browser-bridge/contract.md`](browser-bridge/contract.md) + [`actions.md`](browser-bridge/actions.md).
 - **⚠️ MCP secret TRANSPORT is a one-shot file + wrapper, NEVER the server definition.** The SDK

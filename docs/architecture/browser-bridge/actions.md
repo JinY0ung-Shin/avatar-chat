@@ -181,10 +181,16 @@
   be stale; the extension's is the authoritative one.
   (3) **Password-shape enforcement** in the extension: with `passwordOnly`, `inputPreflight`'s DOM shape
   must be an `<input type=password>`, refused BEFORE any key is sent.
-  (4) **Consent popup** in the extension (`requestDataConsent`-style, kind `secret`, grant key `secret`
-  in the same unified `dataConsentGrants` store cookies/storage use) — per (host, secret) per browser
-  session, un-bypassable from a server/headless path, revocable in the options page, cleared on browser
-  close.
+  (4) **Consent popup** in the extension (`requestDataConsent`, kind `secret`, in the same unified
+  `dataConsentGrants` store cookies/storage use) — asked ONCE PER BROWSER SESSION, not per site and not
+  per secret: the first secret typed in a session prompts, and that one approval covers every allowed
+  site until the user revokes it in the options page or closes the browser. It is the only kind of the
+  four keyed by a SENTINEL (`SECRET_SESSION_GRANT_HOST` = `"*"`, exported from `secretInput.js`) rather
+  than by hostname — `requestDataConsent`'s 4th parameter `grantKey` defaults to `host` for the read
+  kinds and is passed the sentinel here, so the popup still SHOWS the frame host (and the secret name and
+  field kind) while only the MEMORY is session-wide. Widening the grant widens no reach: guards (1)–(3)
+  re-run on every write, so the sites a secret may be typed on remain exactly the ones the owner named
+  per secret, and the popup copy says so. Un-bypassable from a server/headless path either way.
   (5) **Never quoted, never logged, always redacted.** No note, refusal, error, audit row, or log line may
   contain the value. Verification of a `clear` + overtype is by LENGTH only, which is possible because
   Chromium masks a password field's AX value as one `•` per character (measured — contract.md's table and

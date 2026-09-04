@@ -76,9 +76,14 @@
   `openConsentPopup`/`pendingConsent` machinery `new_tab` uses; the popup is `consent.html?kind=cookies`)
   that the user must click 허용 on the FIRST read of each site per browser session. On approval the (host,
   type) is remembered in `chrome.storage.session` (`DATA_GRANTS_KEY` = `dataConsentGrants`, shape
-  `{host:{cookies?,local?,session?}}`), so further reads of the SAME site that session skip the popup; the
-  grant clears when the user revokes it (the options page lists granted hosts + their types with a 취소 /
-  모두 취소 path) or when the browser closes. A decline/timeout/close records nothing, and a
+  `{key:{cookies?,local?,session?,secret?}}`), so further reads of the SAME site that session skip the
+  popup; the
+  grant clears when the user revokes it (the options page lists granted rows + their types with a 취소 /
+  모두 취소 path) or when the browser closes. The `key` is the hostname for the three READ kinds; the
+  `secret` WRITE kind (actions.md guard 4) is the one exception — it is keyed by the sentinel
+  `SECRET_SESSION_GRANT_HOST` (`"*"`) via `requestDataConsent`'s `grantKey` parameter, so its approval is
+  once per browser SESSION across every allowed site, and the options page renders that row under a label
+  rather than a bare `*`. A decline/timeout/close records nothing, and a
   storage read error fails closed (re-prompts). It is NOT origin-exempt, so the current tab must ALSO pass
   the origin allowlist first. Scope is the
   current origin only: `Network.getCookies` is called with `urls:[tab.url]`, never `getAllCookies`. On the

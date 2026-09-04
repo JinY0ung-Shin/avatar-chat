@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 // Kept on ONE line: @ts-expect-error only covers the line after it, and the
 // error is raised on the module specifier — the LAST line of a wrapped import.
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { SECRET_CONSENT_TYPE, SECRET_CONSENT_DECLINED, SECRET_CONSENT_UNANSWERED, SECRET_CONSENT_ALREADY_OPEN, safeSecretName, hostOfUrl, secretHostAllowed, hostList, isPasswordInputShape, shapeBrief, secretTabHostRefusal, secretFrameHostRefusal, secretFrameUnknownRefusal, secretPasswordOnlyRefusal, secretNonTextRefusal, secretValueMissingRefusal, secretConsentOpenFailed, secretEnteredNote, secretVerifiedNote, secretUnverifiedNote, secretLengthMismatchNote } from "../extension/secretInput.js";
+import { SECRET_CONSENT_TYPE, SECRET_SESSION_GRANT_HOST, SECRET_CONSENT_DECLINED, SECRET_CONSENT_UNANSWERED, SECRET_CONSENT_ALREADY_OPEN, safeSecretName, hostOfUrl, secretHostAllowed, hostList, isPasswordInputShape, shapeBrief, secretTabHostRefusal, secretFrameHostRefusal, secretFrameUnknownRefusal, secretPasswordOnlyRefusal, secretNonTextRefusal, secretValueMissingRefusal, secretConsentOpenFailed, secretEnteredNote, secretVerifiedNote, secretUnverifiedNote, secretLengthMismatchNote } from "../extension/secretInput.js";
 
 // The pure half of SECRET input (extension/secretInput.js): the decisions that
 // stand between a stored credential and a page's field, and the wording an agent
@@ -201,6 +201,28 @@ describe("refusals say what happened, name the secret, and redirect", () => {
       expect(text).toMatch(/NOTHING was typed|nothing was typed/);
     }
   });
+
+  it("tells the user the popup is once per SESSION, not once per site", () => {
+    // A timeout is the one refusal that asks the user to go answer the popup, so
+    // it is the one that must describe when the popup appears. Saying "the first
+    // time a secret is typed on a site" would have the agent promising a prompt
+    // on every login page after the session's single approval.
+    expect(SECRET_CONSENT_UNANSWERED).toContain("first time a secret is typed in this browser session");
+    expect(SECRET_CONSENT_UNANSWERED).toContain("one approval then covers every allowed site");
+    expect(SECRET_CONSENT_UNANSWERED).not.toContain("on a site");
+  });
+
+  it("keys the session-wide secret grant by a SENTINEL, never by a hostname", () => {
+    // The grant answers "may a stored secret be typed in this browser session",
+    // so one approval covers every allowed site. "*" can never collide with a
+    // real grant: no page can steer a write into this slot, because the key is a
+    // constant rather than anything derived from the document.
+    expect(SECRET_SESSION_GRANT_HOST).toBe("*");
+    // It is deliberately NOT a host, so the host matcher must never accept it —
+    // otherwise a sentinel leaking into an allowlist would be a wildcard.
+    expect(secretHostAllowed("https://jira.corp.com/", [SECRET_SESSION_GRANT_HOST])).toBe(false);
+    expect(hostOfUrl("https://jira.corp.com/")).not.toBe(SECRET_SESSION_GRANT_HOST);
+  });
 });
 
 describe("write notes report LENGTHS, never content", () => {
@@ -327,6 +349,33 @@ describe("background.js keeps the invariants that only its source can show", () 
     }
   });
 
+  it("asks about the FRAME host but remembers the approval session-wide", () => {
+    const gate = source.slice(source.indexOf("async function secretWriteRefusal("));
+    const body = gate.slice(0, gate.indexOf("\n}\n") + 2);
+    // The popup names the document that will receive the keystrokes — the honest
+    // subject — while the grant is keyed by the sentinel, so the next allowed
+    // site does not interrupt again. Swapping those two would either ask about
+    // the wrong page or re-prompt on every login form.
+    expect(body).toContain("hostOfUrl(frameUrl),\n    SECRET_CONSENT_TYPE,");
+    expect(body).toContain("SECRET_SESSION_GRANT_HOST,\n  );");
+    // The sentinel is imported, never re-spelled here: one source of truth.
+    expect(source).toContain("SECRET_SESSION_GRANT_HOST,\n  SECRET_CONSENT_ALREADY_OPEN,");
+  });
+
+  it("leaves the three READ kinds per-host — grantKey defaults to the host", () => {
+    // read_cookies / read_storage must keep prompting per site. They pass no
+    // grant key at all, so the default is what preserves that; a default of the
+    // sentinel would have one cookie approval unlock every site's cookies.
+    expect(source).toContain("async function requestDataConsent(host, type, extra, grantKey = host) {");
+    expect(source).toContain("if (grants[grantKey]?.[type] === true) return { granted: true };");
+    expect(source).toContain("if (outcome.granted) await rememberDataGrant(grantKey, type);");
+    // The popup query still carries the REAL host, whatever the grant is keyed by.
+    expect(source).toContain("query: `kind=${type}&host=${encodeURIComponent(host)}${extras}`");
+    for (const call of ['requestDataConsent(host || tab.url || "", "cookies")', 'requestDataConsent(host || tab.url || "", type)']) {
+      expect(source, `${call} must not pass a grant key`).toContain(call);
+    }
+  });
+
   it("reads a relayed policy FAIL-CLOSED, so a dropped field cannot widen it", () => {
     const gate = source.slice(source.indexOf("async function secretWriteRefusal("));
     const body = gate.slice(0, gate.indexOf("\n}\n") + 2);
@@ -420,11 +469,48 @@ describe("the consent popup and the options page know the `secret` kind", () => 
     expect(consent).not.toContain("secretValue");
   });
 
+  it("the secret popup says the approval covers the SESSION, not just this site", () => {
+    const consent = fs.readFileSync(path.join(process.cwd(), "extension", "consent.js"), "utf8");
+    const branch = consent.slice(consent.indexOf('kind === "secret"'), consent.indexOf("} else {"));
+    // Someone approving this is approving every allowed site for the session, so
+    // the page has to say so — the host it shows is where THIS write is going,
+    // not the limit of what is being approved.
+    expect(branch).toContain("이번 브라우저 세션 동안");
+    expect(branch).toContain("모든 사이트에서 다시 묻지 않습니다");
+    expect(branch).toContain("지금 입력하려는");
+    // …and it must say the grant widens nothing, or it reads as a wildcard.
+    expect(branch).toContain("입력할 수 있는 사이트를 넓히지 않습니다");
+    // Revocable, and gone when the browser closes.
+    expect(branch).toContain("확장 설정 페이지에서 언제든 취소");
+    expect(branch).toContain("브라우저를 닫으면 사라집니다");
+  });
+
   it("the options page lists the grant so it can be revoked mid-session", () => {
     const options = fs.readFileSync(path.join(process.cwd(), "extension", "options.js"), "utf8");
     expect(options).toContain('secret: "시크릿 입력"');
     // grantedTypes reads the label map, so a new kind can never be listed in the
     // popup but missing from the revoke panel.
     expect(options).toContain("Object.keys(DATA_TYPE_LABELS)");
+  });
+
+  it("the options page renders the sentinel row as a phrase, not a bare `*`", () => {
+    const options = fs.readFileSync(path.join(process.cwd(), "extension", "options.js"), "utf8");
+    // options.html loads this as a CLASSIC script, so the sentinel is duplicated
+    // rather than imported; the value must still match secretInput.js exactly.
+    expect(options).toContain(`const SECRET_SESSION_GRANT_HOST = "${SECRET_SESSION_GRANT_HOST}";`);
+    expect(options).toContain("secretInput.js");
+    // A bare "*" in the list would read as a wildcard SITE the user allowed,
+    // which is the opposite of what the row means.
+    expect(options).toContain('const SECRET_SESSION_GRANT_LABEL = "모든 허용 사이트 (이 세션의 시크릿 입력)";');
+    expect(options).toContain("function grantRowLabel(host)");
+    expect(options).toContain("name.textContent = grantRowLabel(host);");
+    // Revoke reaches it like any other row: the button deletes grants[host].
+    expect(options).toContain("void revokeDataGrant(host)");
+    expect(options).toContain("delete grants[host];");
+    // The panel hint has to explain the split, or the one odd row is a mystery.
+    const html = fs.readFileSync(path.join(process.cwd(), "extension", "options.html"), "utf8");
+    expect(html).toContain("브라우저 세션마다 한 번");
+    expect(html).toContain("모든 허용 사이트");
+    expect(html).toContain("사이트별·종류별로");
   });
 });

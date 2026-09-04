@@ -14,7 +14,11 @@
 //   - kind=secret (type / fill_form with a stored secret): the avatar wants to
 //     TYPE one of the owner's stored secrets into this site. The only kind that
 //     writes rather than reads, so it also names the secret and whether it is
-//     restricted to a password field.
+//     restricted to a password field — and the only kind whose approval is
+//     SESSION-WIDE rather than per site (one yes covers every site the owner
+//     allowed for that secret in Noah's settings), which the copy has to say
+//     plainly: the host shown is where this write is going, not the limit of
+//     what is being approved.
 //
 // The URL/host shown here is DISPLAY-ONLY (textContent, never markup). Whether
 // the action may happen at all was already decided (origin allowlist / the
@@ -72,19 +76,20 @@ if (kind === "cookies") {
   // approving, because "아무 입력 필드" is the wider of the two by a lot.
   const field = params.get("field") === "any" ? "입력 필드" : "비밀번호 필드";
   document.title = "시크릿 입력 허용";
-  document.getElementById("title").textContent = "저장된 시크릿을 이 사이트에 입력할까요?";
+  document.getElementById("title").textContent = "저장된 시크릿 입력을 허용할까요?";
   document.getElementById("lead").textContent =
-    `아바타가 이 사이트의 ${field}에 저장해 둔 시크릿 값을 입력하려고 합니다. 값은 브라우저가 바로 입력하며 ` +
-    "아바타에게는 보이지 않습니다(길이만 확인합니다). 허용하면 이 사이트는 이번 브라우저 세션 동안 기억되어, " +
-    "확장 설정에서 취소하거나 브라우저를 닫기 전까지는 같은 사이트에서 다시 묻지 않습니다.";
+    `아바타가 아래 사이트의 ${field}에 저장해 둔 시크릿 값을 입력하려고 합니다. 값은 브라우저가 바로 입력하며 ` +
+    "아바타에게는 보이지 않습니다(길이만 확인합니다). 허용하면 이번 브라우저 세션 동안 기억되어, 이 사이트뿐 " +
+    "아니라 설정에서 시크릿마다 허용해 둔 모든 사이트에서 다시 묻지 않습니다. 아래 주소는 지금 입력하려는 " +
+    "곳을 알려 줄 뿐입니다.";
   document.getElementById("host").textContent = host || "(알 수 없는 주소)";
   // The secret NAME, not its value — the extension never receives a value it
   // could show here, and this page must never become the place one appears.
   document.getElementById("url").textContent = name ? `시크릿 ${name} · ${field}` : field;
   document.getElementById("hint").textContent =
-    "로그인을 직접 시키지 않았다면 거부하세요. 이 시크릿은 설정에서 지정한 사이트에서만 입력할 수 있고, " +
-    "허용은 이번 세션 동안 이 사이트에 대해서만 유지되며 확장 설정에서 언제든 취소할 수 있습니다. " +
-    "20초 안에 응답하지 않으면 이 요청은 만료됩니다.";
+    "로그인을 직접 시키지 않았다면 거부하세요. 이 허용은 입력할 수 있는 사이트를 넓히지 않습니다 — 시크릿은 " +
+    "설정에서 그 시크릿에 지정한 사이트에서만 입력됩니다. 허용은 확장 설정 페이지에서 언제든 취소할 수 있고, " +
+    "브라우저를 닫으면 사라집니다. 20초 안에 응답하지 않으면 이 요청은 만료됩니다.";
   document.getElementById("allow").textContent = "허용";
 } else {
   const rawUrl = params.get("url") || "";

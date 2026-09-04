@@ -59,6 +59,7 @@ import {
 } from "./axtree.js";
 import {
   SECRET_CONSENT_TYPE,
+  SECRET_SESSION_GRANT_HOST,
   SECRET_CONSENT_ALREADY_OPEN,
   SECRET_CONSENT_DECLINED,
   SECRET_CONSENT_UNANSWERED,
@@ -1250,15 +1251,21 @@ async function requestGroupConsent(url) {
 }
 
 /**
- * Per-site, per-browser-session, PER-DATA-TYPE consent grants. Once the user
- * approves reading a site's cookies / localStorage / sessionStorage, that exact
+ * Per-browser-session, PER-DATA-TYPE consent grants. Once the user approves
+ * reading a site's cookies / localStorage / sessionStorage, that exact
  * (hostname, type) pair is remembered here so the SAME site+type does not
  * re-prompt for the rest of the session — approving one type NEVER approves
  * another (sessionStorage consent leaves cookies and localStorage still gated).
  * storage.session (not local) is the deliberate store: it clears when the
  * browser closes — exactly this grant's lifetime — and it survives the MV3
  * worker idling out between turns. Shape:
- * { [hostname]: { cookies?: true, local?: true, session?: true } }.
+ * { [key]: { cookies?: true, local?: true, session?: true, secret?: true } }.
+ *
+ * The KEY is the hostname for the three READ kinds, which are per site. The
+ * `secret` WRITE kind is the exception: it is remembered under the sentinel
+ * `SECRET_SESSION_GRANT_HOST` ("*"), so one approval covers every site the owner
+ * allowed for the rest of the session (secretInput.js says why). Same store,
+ * same lifetime, same revoke button — only the key differs.
  */
 const DATA_GRANTS_KEY = "dataConsentGrants";
 
@@ -1284,10 +1291,14 @@ const DATA_CONSENT_COPY = {
     unanswered: STORAGE_CONSENT_UNANSWERED,
     openFailed: STORAGE_OPEN_FAILED,
   },
-  // The one grant kind that WRITES. It rides the same store and the same popup
-  // for the same reason the reads do: the gate has to live where the server
-  // cannot reach it, and a user who has approved "type LOGIN_PW on this site"
-  // should not be asked again on every field of the same form.
+  // The one grant kind that WRITES, and the one kind whose grant is SESSION-WIDE
+  // rather than per site (key: SECRET_SESSION_GRANT_HOST). It rides the same
+  // store and the same popup for the same reason the reads do: the gate has to
+  // live where the server cannot reach it. But the question it asks is "may the
+  // avatar type my stored secrets in this browser session?", not a per-site one
+  // — the sites were already named per secret in Noah's settings and are
+  // re-checked at the keyboard on every write — so one approval covers every
+  // allowed site instead of interrupting again on the next login page.
   [SECRET_CONSENT_TYPE]: {
     declined: SECRET_CONSENT_DECLINED,
     unanswered: SECRET_CONSENT_UNANSWERED,
@@ -1308,12 +1319,12 @@ async function readDataGrants() {
   }
 }
 
-async function rememberDataGrant(host, type) {
+async function rememberDataGrant(grantKey, type) {
   try {
     const grants = await readDataGrants();
-    const forHost = grants[host] && typeof grants[host] === "object" ? grants[host] : {};
-    forHost[type] = true;
-    grants[host] = forHost;
+    const forKey = grants[grantKey] && typeof grants[grantKey] === "object" ? grants[grantKey] : {};
+    forKey[type] = true;
+    grants[grantKey] = forKey;
     await chrome.storage.session.set({ [DATA_GRANTS_KEY]: grants });
   } catch {
     // A write failure costs only the MEMORY, never the read: the caller still
@@ -1324,22 +1335,29 @@ async function rememberDataGrant(host, type) {
 /**
  * Ask the user, in extension UI, whether to hand THIS tab's data of the given
  * `type` (cookies incl. httpOnly session tokens, or localStorage/sessionStorage
- * incl. bearer/JWT tokens) to the avatar. Consent is per SITE, per DATA TYPE,
- * per browser SESSION: the first read of a (host, type) prompts, and once
- * approved that exact pair is remembered (readDataGrants / rememberDataGrant) so
- * further reads of the SAME site+type skip the popup until the user revokes it
- * or the browser closes. Still the un-bypassable gate that stops a server /
- * headless / background path from reading this data without the user's live
- * approval — a background run reaches neither the popup nor a grant it never made.
+ * incl. bearer/JWT tokens) to the avatar — or, for the `secret` kind, whether to
+ * let a stored secret be typed. Consent is per DATA TYPE, per browser SESSION:
+ * the first request for a (grantKey, type) prompts, and once approved that exact
+ * pair is remembered (readDataGrants / rememberDataGrant) so further requests
+ * skip the popup until the user revokes it or the browser closes. Still the
+ * un-bypassable gate that stops a server / headless / background path from
+ * reading this data without the user's live approval — a background run reaches
+ * neither the popup nor a grant it never made.
+ *
+ * `grantKey` defaults to `host`, which is what the three READ kinds want: their
+ * grant is per site. `secret` passes `SECRET_SESSION_GRANT_HOST` instead, so one
+ * approval covers every allowed site for the session. The popup always receives
+ * the REAL `host`, granted or not — the user answers with the actual page in
+ * view; only the MEMORY is keyed differently.
  */
-async function requestDataConsent(host, type, extra) {
+async function requestDataConsent(host, type, extra, grantKey = host) {
   const copy = DATA_CONSENT_COPY[type] || DATA_CONSENT_COPY.cookies;
-  // Already approved this (site, type) this session → honor it with no popup.
+  // Already approved this (key, type) this session → honor it with no popup.
   // A read error in readDataGrants fails closed (returns {}), so we fall through
-  // to the popup rather than auto-granting; a legacy/non-object per-host value
+  // to the popup rather than auto-granting; a legacy/non-object per-key value
   // likewise fails the STRICT === true check and re-prompts.
   const grants = await readDataGrants();
-  if (grants[host]?.[type] === true) return { granted: true };
+  if (grants[grantKey]?.[type] === true) return { granted: true };
   // `extra` is what the popup needs to say WHICH secret and WHICH kind of field
   // (the read kinds need nothing beyond the host). Encoded here, so no caller
   // can hand the popup a pre-built query string.
@@ -1356,8 +1374,8 @@ async function requestDataConsent(host, type, extra) {
     unansweredReason: copy.unanswered,
   });
   // Remember ONLY a real approval; a decline / timeout / close records nothing,
-  // so the next read of this (site, type) prompts again.
-  if (outcome.granted) await rememberDataGrant(host, type);
+  // so the next request for this (key, type) prompts again.
+  if (outcome.granted) await rememberDataGrant(grantKey, type);
   return outcome;
 }
 
@@ -3878,14 +3896,18 @@ async function clearAndWrite(ref, target, value, insert) {
 //   3. with `passwordOnly` (the default) the target must be a real
 //      `<input type=password>`;
 //   4. the user must approve, in a popup this side of the wire, the first time a
-//      secret is typed on that site in this browser session.
+//      secret is typed in this browser SESSION — once, for every allowed site,
+//      not once per site (the sites were already chosen per secret in Noah's
+//      settings, and rule 1 re-checks them at the keyboard on every write). The
+//      grant is remembered under SECRET_SESSION_GRANT_HOST, revocable in the
+//      options page, and gone when the browser closes.
 //
 // The shape check sits AHEAD of the popup deliberately. The popup names the
 // field kind it is asking about ("비밀번호 필드"), so prompting and THEN refusing
 // because the target was never a password input asks the user a question about
 // a write that could not happen — and an approval leaves a session grant behind
-// for it. The check is one depth-0 describeNode and depends on nothing the
-// consent decides, so it is free to run first.
+// for it, now a session-WIDE one. The check is one depth-0 describeNode and
+// depends on nothing the consent decides, so it is free to run first.
 //
 // And the write itself is deliberately NARROWER than the ordinary one: no rung
 // of the clearing ladder runs, nothing is quoted, and verification is by LENGTH
@@ -3966,11 +3988,14 @@ async function refDocumentUrl(ref) {
  * explicit `false` (a dropped flag reads as the restrictive default the server
  * also defaults to).
  *
- * The consent grant is keyed by (host, "secret") like every other kind in the
- * unified store, NOT by secret name: it answers "may a stored secret be typed on
- * this site this session", which is the question the user was actually asked, and
- * it keeps a 12-field form from raising 12 popups. The popup itself names the
- * secret and the field kind so the answer is given with those in view.
+ * The consent grant is keyed by (SECRET_SESSION_GRANT_HOST, "secret") — not by
+ * secret name, and not by host either. It answers "may a stored secret be typed
+ * in this browser session", which is the question the user is actually asked, so
+ * one approval covers every allowed site: a 12-field form raises no second
+ * popup, and neither does the next login page. The per-SITE decision lives one
+ * layer up, in the owner's per-secret host allowlist, which the checks above
+ * re-apply to every single write. The popup still shows the real host, the
+ * secret name and the field kind, so the answer is given with those in view.
  */
 async function secretWriteRefusal(tab, ref, policy, value) {
   const name = policy?.name;
@@ -4012,13 +4037,17 @@ async function secretWriteRefusal(tab, ref, policy, value) {
     if (!isPasswordInputShape(shape)) return secretPasswordOnlyRefusal({ name, shape });
   }
 
-  // Keyed on the document that will RECEIVE the keystrokes, not the tab — both
-  // passed the allowlist above, and the frame is the honest subject. LAST, so
-  // the user is only ever asked about a write every other gate has cleared.
-  const consent = await requestDataConsent(hostOfUrl(frameUrl), SECRET_CONSENT_TYPE, {
-    name: String(name ?? ""),
-    field: passwordOnly ? "password" : "any",
-  });
+  // SHOWN: the document that will RECEIVE the keystrokes, not the tab — both
+  // passed the allowlist above, and the frame is the honest subject.
+  // REMEMBERED: the session-wide sentinel, so the next allowed site does not ask
+  // again. LAST, so the user is only ever asked about a write every other gate
+  // has cleared.
+  const consent = await requestDataConsent(
+    hostOfUrl(frameUrl),
+    SECRET_CONSENT_TYPE,
+    { name: String(name ?? ""), field: passwordOnly ? "password" : "any" },
+    SECRET_SESSION_GRANT_HOST,
+  );
   if (!consent.granted) return consent.reason;
   return "";
 }

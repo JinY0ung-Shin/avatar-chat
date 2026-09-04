@@ -133,8 +133,9 @@ These are the invariants the project is built around. New work should reinforce 
   the extension types it. Five guards are each load-bearing: per-secret opt-in with exact hostnames (no
   wildcards; reserved git/SSH names never qualify), the host check at BOTH ends (server pre-checks the last
   tab URL it saw; the extension re-checks the live tab AND the element's own frame document, failing
-  closed), password-field-only enforced in the extension, a per-(site, `secret`) consent popup the server
-  cannot bypass, and never-quoted/always-redacted handling (LENGTH-only verification because Chromium masks
+  closed), password-field-only enforced in the extension, a once-per-browser-session `secret` consent popup
+  (one approval covers every allowed site — the per-site limit is the owner's host allowlist, not the popup)
+  the server cannot bypass, and never-quoted/always-redacted handling (LENGTH-only verification because Chromium masks
   a password field's AX value as one `•` per character; the plaintext rides `secretText`/`secretValue` on a
   TRANSIENT SSE frame that is never replayed, never `text`; the reply is redacted and the value joins the
   PostToolUse redaction set; audit rows carry the NAME only). The degrade is client-side, not a floor

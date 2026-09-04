@@ -357,7 +357,7 @@ function browserSecretGuidance(request: AgentRequest): string {
     `For the logins they do NOT already carry, the owner enabled these stored secrets for browser input: ${roster}. ` +
     "To enter one, pass its NAME as `secretName` to `type` (or to a `fill_form` field) and OMIT `value` — the server resolves the value and the bridge types it into the field. You never see it: it is not in this conversation, and any echo of it in a later tool result comes back `[REDACTED:<NAME>]`. " +
     "Never type a credential literally, never ask the user for one, and never use `secretName` on a field that is not a login/credential field. " +
-    "The bridge REFUSES a secret outside its allowed sites, and the user may decline the confirmation popup their own browser shows the first time — neither is retryable: say which secret and which site, and stop. " +
+    "The bridge REFUSES a secret outside its allowed sites, and the user may decline the one-time confirmation popup their browser shows the first time a secret is typed in that browser session (one approval covers every allowed site until the browser closes) — neither is retryable: say which secret and which site, and stop. " +
     "One-time codes (OTP/2FA) and payment details remain off-limits entirely, and a login no enabled secret covers is still a hand-back. "
   );
 }

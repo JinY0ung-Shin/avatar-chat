@@ -44,10 +44,19 @@ Durable constraints for this layer:
   each browser session prompts a popup (approving cookies never approves localStorage/sessionStorage, and
   vice versa; approval remembered in `chrome.storage.session`, revocable in the options page, cleared on
   browser close) and is audited by KEY NAME only. **`secret` is a FOURTH grant kind in that same store
-  (0.28.0) and the only one that WRITES** — typing a stored secret into a login field. Adding a kind means
+  (0.28.0), the only one that WRITES** — typing a stored secret into a login field — **and the only one
+  whose grant is SESSION-WIDE instead of per site**: it is remembered under the sentinel key
+  `SECRET_SESSION_GRANT_HOST` (`"*"`, exported from `secretInput.js`), so the first secret typed in a
+  browser session prompts and no allowed site prompts again until the user revokes it or closes the
+  browser. `requestDataConsent(host, type, extra, grantKey = host)` is what splits the two: the popup
+  always shows the REAL host, only the memory is keyed by `grantKey`. The per-SITE decision for a secret
+  lives one layer up (the owner's per-secret host allowlist, re-checked at the keyboard every write), so
+  the session grant widens nothing — and the consent copy must say exactly that, or the popup reads as
+  approving one site. Adding a kind means
   three places move together: `DATA_CONSENT_COPY` (background.js), the `kind=` branch in `consent.js`, and
   `DATA_TYPE_LABELS` in `options.js` (which `grantedTypes` now enumerates, so a kind can never be
-  promptable but unrevokable).
+  promptable but unrevokable); a kind keyed by a SENTINEL needs a fourth — the row label in `options.js`
+  (`grantRowLabel`), or the list shows a bare `*` that reads as a wildcard site.
 - **A SECRET write is a deliberately NARROWER write than an ordinary one, and the narrowing is the
   feature.** The plaintext arrives on `secretText` / a field's `secretValue` — never `text`/`value`, so a
   pre-0.28.0 build reads `message.text || ""` and types NOTHING; keep that property when touching the
@@ -56,7 +65,8 @@ Durable constraints for this layer:
   `tests/visual/password-facts.spec.ts`, and a root-session capture would answer with the TOP page's URL,
   which is the allowed host) → password shape → consent, all before a single key. The popup goes LAST
   because it names the field kind it asks about: prompting and then refusing on shape asks the user
-  about a write that could not happen, and their approval would leave a session grant behind for it. The write itself goes
+  about a write that could not happen, and their approval would leave a session-WIDE grant behind for it
+  (the `secret` grant is keyed by sentinel, so a stray approval is not even scoped to one site). The write itself goes
   through `writeSecretField`, NEVER `clearAndWrite`: every end state of the clearing ladder QUOTES what
   the field landed on and rungs B/C re-enter the value twice more. Verification is a LENGTH comparison
   against a read-back Chromium masks (`•` per character), and no note, error or throw may ever carry the

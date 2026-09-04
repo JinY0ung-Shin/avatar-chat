@@ -603,8 +603,9 @@ export function buildBrowserTools(context: BrowserToolsContext) {
       "the bridge types it, so you never see it and any echo of it in a result comes back " +
       `\`[REDACTED:<NAME>]\`. Enabled for this user: ${secretRoster}. The bridge REFUSES a secret outside ` +
       "its allowed sites, and (when it is password-only) anywhere but a real password field, and the user " +
-      "may decline the confirmation popup their own browser shows the first time — none of those is " +
-      "retryable, so report which secret and which site instead of trying again. NEVER type a credential " +
+      "may decline the one-time confirmation popup their browser shows the first time a secret is typed in " +
+      "that browser session (one approval covers every allowed site until the browser closes) — none of " +
+      "those is retryable, so report which secret and which site instead of trying again. NEVER type a credential " +
       "literally, never ask the user for one, and never use `secretName` on a field that is not a " +
       "credential field. One-time codes and payment details are off-limits entirely: stop and hand control " +
       "back to the user."

@@ -172,21 +172,32 @@ function renderVersion() {
 
 // --------------------------------------------------- site data grants
 //
-// read_cookies / read_storage / secret input consent is per SITE, per DATA TYPE,
-// per browser SESSION: the first read (or first secret write) of a (host, type)
-// prompts a popup, and background.js
+// read_cookies / read_storage consent is per SITE, per DATA TYPE, per browser
+// SESSION: the first read of a (host, type) prompts a popup, and background.js
 // remembers the approved (host, type) in chrome.storage.session so the SAME
-// site+type does not re-prompt for the rest of the session. This panel lists
-// those remembered hosts — with which data types each has granted (쿠키 /
-// localStorage / sessionStorage / 시크릿 입력) — and lets the user revoke a whole
-// host (취소,
-// all its types) or all of them (모두 취소) mid-session; they also clear on their
-// own when the browser closes. storage.session is a TRUSTED_CONTEXTS store and
+// site+type does not re-prompt for the rest of the session. Secret INPUT rides
+// the same store with the same lifetime, but its grant is session-WIDE: it is
+// remembered under one sentinel key instead of a hostname, so a single approval
+// covers every site the owner allowed for that secret. This panel lists every
+// remembered row — with which data types each has granted (쿠키 / localStorage /
+// sessionStorage / 시크릿 입력) — and lets the user revoke a whole row (취소, all
+// its types) or all of them (모두 취소) mid-session; they also clear on their own
+// when the browser closes. storage.session is a TRUSTED_CONTEXTS store and
 // this page is a trusted extension context, so it is read/written here directly
 // — the same way the allowlist above uses chrome.storage.local — with no
 // setAccessLevel and no message to the background worker. The key MUST match
 // background.js.
 const DATA_GRANTS_KEY = "dataConsentGrants";
+// The session-wide secret-input grant key. Duplicated, NOT imported: this page
+// loads as a plain classic script (options.html has no type="module"), so it
+// cannot pull from extension/secretInput.js — which is the source of truth for
+// this value and for why the secret kind is keyed this way.
+const SECRET_SESSION_GRANT_HOST = "*";
+// What the sentinel row is CALLED in the list. A bare "*" would read as a
+// wildcard site the user had somehow allowed, which is the opposite of what it
+// means: the secret's own site list is set per secret in Noah's settings and is
+// unaffected by this grant.
+const SECRET_SESSION_GRANT_LABEL = "모든 허용 사이트 (이 세션의 시크릿 입력)";
 // Display order + label for each data type; the keys match background.js.
 // `secret` is the one that WRITES (typing a stored secret into a login field),
 // so it is listed last and named for the action rather than for a store.
@@ -196,6 +207,11 @@ const DATA_TYPE_LABELS = {
   session: "sessionStorage",
   secret: "시크릿 입력",
 };
+
+/** The row's display name: the sentinel reads as a phrase, a host as itself. */
+function grantRowLabel(host) {
+  return host === SECRET_SESSION_GRANT_HOST ? SECRET_SESSION_GRANT_LABEL : host;
+}
 
 const dataGrantsList = document.getElementById("data-grants");
 const dataGrantsEmpty = document.getElementById("data-grants-empty");
@@ -232,7 +248,7 @@ async function revokeDataGrant(host) {
     } else {
       await chrome.storage.session.remove(DATA_GRANTS_KEY);
     }
-    dataGrantsStatus.textContent = `${host} 접근을 취소했습니다.`;
+    dataGrantsStatus.textContent = `${grantRowLabel(host)} 허용을 취소했습니다.`;
   } catch {
     dataGrantsStatus.textContent = "취소하지 못했습니다. 다시 시도하세요.";
   }
@@ -266,11 +282,12 @@ async function renderDataGrants() {
     const li = document.createElement("li");
     const info = document.createElement("div");
     info.className = "grant-info";
-    // The host is a hostname the user already approved; render it as TEXT,
-    // never markup, consistent with how the consent popup shows it.
+    // The host is a hostname the user already approved (or the session-wide
+    // secret sentinel); render it as TEXT, never markup, consistent with how the
+    // consent popup shows it.
     const name = document.createElement("span");
     name.className = "host";
-    name.textContent = host;
+    name.textContent = grantRowLabel(host);
     const types = document.createElement("span");
     types.className = "grant-types";
     types.textContent = grantedTypes(grants[host])
