@@ -9,9 +9,20 @@
 
    One stylesheet, two hosts: as the action POPUP the window is a browser-drawn
    sharp-cornered bubble, so the sheet fills it edge-to-edge (a rounded card
-   floating inside that square frame reads as a mistake) and the body width must
-   be explicit or the popup balloons to Chrome's 800px cap; as the options TAB
-   the page owns a wide canvas, so the same sheet floats as a rounded card. */
+   floating inside that square frame reads as a mistake); as the options TAB
+   the page owns a wide canvas, so the same sheet floats as a rounded card.
+
+   POPUP SIZING INVARIANT: the body gets ONE fixed width and NOTHING viewport-
+   relative below the popup's 800px cap — no `max-width: 100vw`, no `%` of the
+   viewport, no media query that can match under ~430px. Chrome sizes an action
+   popup by resetting its frame to the 25px minimum and reading the document's
+   scrollWidth as the content width, and since Chrome 152 it repeats that
+   remeasure after every post-load layout change. A width that follows the
+   viewport never reports its true value at 25px, so the popup oscillates
+   between partial widths forever (classic scrollbars) or collapses to a ~32px
+   sliver (overlay scrollbars); with no width at all it balloons to the cap.
+   The 40rem media query below is safe only because the popup can never reach
+   640px (416px body + a scrollbar). */
 
 :root {
   color-scheme: light dark;
@@ -97,8 +108,8 @@ html {
 }
 
 body {
+  /* Fixed and viewport-independent — see POPUP SIZING INVARIANT above. */
   width: 26rem;
-  max-width: 100vw;
   margin: 0 auto;
   background: transparent;
   color: var(--text);

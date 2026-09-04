@@ -149,3 +149,10 @@
   `Current page:` line, which `browserTools.report()` has always printed) and then name what each
   generation leaves behind. Scripting only the new behaviour would strand every install on the
   `compatible` rung with an orphaned staging tab and an agent waiting for a note that never comes.
+- **0.28.1 changes NO wire field at all — it is a popup-page CSS fix — and the floor stays 0.6.0.** The
+  extension's action popup (`options.html`) oscillated between partial widths on Chrome ≥152 (or collapsed to
+  a ~32px sliver with overlay scrollbars) because `options.css` clamped the body to `max-width: 100vw`, which
+  the autosizer's 25px remeasure can never resolve to the true width (extension/CLAUDE.md). The op
+  contract, both metacognition surfaces, and the relay are untouched, so nothing can branch on this version
+  and nothing should: the cure for an affected install is simply taking the update (composer badge
+  `compatible` → update prompt), not a reinstall order.

@@ -95,8 +95,18 @@ Durable constraints for this layer:
   they are model-facing input (refusal reasons, error text the agent reads). Everything a PERSON reads
   (`options.html`, `consent.html`, `action.default_title`, `README.md`) is KOREAN. `manifest.json`
   `description` and `policy-schema.json` are the easy misses.
-- **`options.html` is BOTH the action popup and the options tab.** As a popup it shrinks to the body, so
-  `options.css` must keep an explicit body width or the popup balloons to Chrome's 800px cap. Setting
+- **`options.html` is BOTH the action popup and the options tab, and the popup's body width must be ONE
+  fixed, viewport-independent value.** Chrome sizes an action popup by resetting its frame to the 25px
+  minimum and reading the document's `scrollWidth` as the content width — and since Chrome 152 it repeats
+  that remeasure after every post-load layout change. With no width the popup balloons to the 800px cap;
+  with a width that follows the viewport (`max-width: 100vw`, `%`, a media query matching under ~430px) it
+  never reports its true width at 25px, so it oscillates between partial widths forever on classic
+  scrollbars or collapses to a ~32px sliver on overlay scrollbars (the 2026-09-04 "popup keeps shrinking
+  and growing" bug — a `max-width: 100vw` shipped since 0.9.0 was harmless until Chrome 152). Verify popup
+  CSS by OPENING the real popup: Playwright + `--load-extension`, `chrome.action.openPopup()` from the
+  service worker, and a probe script in the popup logging `resize` sizes to `chrome.storage.local` (the
+  popup never surfaces as a Playwright page) — against the CURRENT stable Chrome for Testing build, classic
+  AND `--enable-features=OverlayScrollbar`, with the unfixed CSS as the control. Setting
   `action.default_popup` means `chrome.action.onClicked` will never fire — do not add a listener for it.
 - **Verify manifest changes by LOADING the extension, not by reading it.** Chrome loads an extension with an
   invalid `externally_connectable` pattern (dropping the entry as a warning), so "it loaded" is not evidence
