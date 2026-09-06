@@ -23,6 +23,7 @@ import {
   KNOWLEDGE_TOOL_NAMES,
   type KnowledgeToolsContext,
 } from "../src/server/agent/knowledgeTools.js";
+import { readSystemManual } from "../src/server/agent/systemManual.js";
 import { normalizeHashtags } from "../src/server/store.js";
 import {
   buildAvatarDirectoryTools,
@@ -3240,6 +3241,33 @@ describe("buildPrompt", () => {
     expect(p).toContain("load starting from the next conversation");
   });
 
+  it.each([
+    { viewerIsOwner: true },
+    { viewerIsOwner: false },
+    { viewerIsOwner: true, resumeSessionId: "existing-session" },
+    { viewerIsOwner: true, headless: true, allowHeadlessTools: true },
+    { viewerIsOwner: true, externalTaskApi: true },
+    { groupAgent: { groupId: "g", agentId: "a", groupName: "Team", viewerRole: "member" as const, captureAllowed: false } },
+  ])("keeps the manual index and lookup trigger in the system layer: %j", (over) => {
+    const request = req(over);
+    const system = buildSystemPromptAppend(request);
+    expect(system).toContain("Official Noah usage manual");
+    expect(system).toContain("external-tasks: External Task API integration");
+    expect(system).toContain("mcp__system__read_manual");
+    expect(system).toContain("Never infer current permissions or configuration from the manual");
+    // Full API instructions are retrieved only on demand, not paid on every turn.
+    expect(system).not.toContain("curl -sS");
+    expect(system).not.toContain("Idempotency-Key: incident-example-001");
+    expect(buildUserPrompt(request)).not.toContain("Official Noah usage manual");
+  });
+
+  it("keeps system lookup available even when all optional groups are deselected", () => {
+    const system = buildSystemPromptAppend(req({ mcpToolGroups: [] }));
+    expect(system).toContain("external-tasks: External Task API integration");
+    expect(system).toContain("System tools are always available");
+    expect(system).toContain("mcp__system__read_manual");
+  });
+
   it("omits prompt guidance for disabled MCP tool groups", () => {
     const p = buildPrompt(
       req({
@@ -3251,7 +3279,7 @@ describe("buildPrompt", () => {
     );
     expect(p).toContain("disabled these MCP tool groups");
     expect(p).toContain("mcp__git_repo__register_repo");
-    expect(p).not.toContain("mcp__system__describe_system");
+    expect(p).toContain("mcp__system__describe_system");
     expect(p).not.toContain("mcp__confluence__");
     expect(p).not.toContain("mcp__brain__search");
     expect(p).not.toContain("mcp__canvas__show");
@@ -3271,7 +3299,7 @@ describe("buildPrompt", () => {
     // The user-deselected sentence lists exactly the user's own picks — the
     // admin-blocked pair is never (mis)attributed to the user...
     expect(p).toContain(
-      "in the chat composer: personal knowledge, group knowledge, Confluence, avatar discovery & consultation, visual canvas, browser control, system management.",
+      "in the chat composer: personal knowledge, group knowledge, Confluence, avatar discovery & consultation, visual canvas, browser control.",
     );
     // ...and the policy itself is never mentioned: the avatar only knows the
     // tools it has (owner decision — no policy meta-cognition).
@@ -3591,8 +3619,10 @@ describe("buildPrompt", () => {
       0,
     );
     expect(p).toContain("General **git repo work**");
-    expect(p).toContain("`push` is not main-only");
-    expect(p).toContain("set that name as `register_repo`'s `branch`");
+    expect(p).toContain("topic `git-repositories`");
+    const manual = readSystemManual("git-repositories").text;
+    expect(manual).toContain("`push` is not main-only");
+    expect(manual).toContain("set that name as `register_repo`'s `branch`");
   });
 
   it("tells the owner how to enable SSH tools when no SSH key is configured", () => {
@@ -4127,7 +4157,7 @@ describe("buildPrompt", () => {
     expect(noVision).toContain("`xFraction`/`yFraction`");
   });
 
-  it("teaches the clipboard staging tab's auto-close for BOTH extension generations", () => {
+  it("retrieves the clipboard staging workflow while keeping its safety rule standing", () => {
     // A current extension (0.27.0+) closes a COPIED staging tab itself and puts
     // the working tab back on the target page; an older install leaves the tab
     // open. MIN_COMPATIBLE deliberately stayed put, so the prompt cannot know
@@ -4135,9 +4165,12 @@ describe("buildPrompt", () => {
     // rule that holds either way: the CLICK result is the verdict, and COPIED is
     // the only state a paste may follow.
     const prompt = buildPrompt(req({ browserEnabled: true }), 0);
-    expect(prompt).toContain("read the outcome from THAT click's own result");
-    expect(prompt).toContain("CLOSES the staging tab for you");
-    expect(prompt).toContain("`close_tab` the staging tab yourself");
+    expect(prompt).toContain("topic `browser-operations`");
+    expect(prompt).not.toContain("CLOSES the staging tab for you");
+    const manual = readSystemManual("browser-operations").text;
+    expect(manual).toContain("read the outcome from THAT click's own result");
+    expect(manual).toContain("CLOSES the staging tab for you");
+    expect(manual).toContain("`close_tab` the staging tab yourself");
     expect(prompt).toContain("Never paste on anything but COPIED");
     // list_tabs is no longer the verification step: it cost a round trip for a
     // title the click already returned, and after the auto-close there is no

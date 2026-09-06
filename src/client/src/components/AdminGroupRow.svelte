@@ -5,7 +5,7 @@
   import { confirmAction } from "../lib/confirm";
   import { appState, notify } from "../lib/state";
   import type { AdminGroupSummary, GroupMember } from "../lib/types";
-  import { MCP_TOOL_GROUPS, type McpToolGroupId } from "../../../shared/mcpToolGroups";
+  import { MCP_TOOL_GROUPS, effectiveMcpToolGroups, isRequiredMcpToolGroup, type McpToolGroupId } from "../../../shared/mcpToolGroups";
 
   export let group: AdminGroupSummary;
   export let reload: () => Promise<void>;
@@ -28,7 +28,7 @@
   // `policyRestricted` off ⇒ null(제한 없음); on ⇒ the checked allowlist (may be []).
   let policyRestricted = group.allowedMcpToolGroups !== null;
   let policyDraft = new Set<McpToolGroupId>(
-    group.allowedMcpToolGroups ?? MCP_TOOL_GROUPS.map((g) => g.id),
+    effectiveMcpToolGroups(group.allowedMcpToolGroups),
   );
   let policyBusy = false;
   let policyError = "";
@@ -86,7 +86,7 @@
   $: addStatusId = `admin-group-add-status-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   $: memberStatusId = `admin-group-member-status-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   $: policyStatusId = `admin-group-policy-status-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-  $: savedPolicy = group.allowedMcpToolGroups;
+  $: savedPolicy = group.allowedMcpToolGroups === null ? null : effectiveMcpToolGroups(group.allowedMcpToolGroups);
   $: policyDirty =
     policyRestricted !== (savedPolicy !== null) ||
     (policyRestricted &&
@@ -96,8 +96,8 @@
     ? "저장 중…"
     : policyError
       ? `저장 실패: ${policyError}`
-      : policyRestricted && policyDraft.size === 0
-        ? "모든 MCP 도구 묶음이 차단됩니다. 저장하면 그룹원 아바타가 MCP 도구를 쓸 수 없습니다."
+      : policyRestricted && [...policyDraft].every(isRequiredMcpToolGroup)
+        ? "선택 가능한 도구 묶음이 모두 차단됩니다. 시스템 도구는 항상 사용할 수 있습니다."
         : policyDirty
           ? "저장하지 않은 도구 정책 변경 사항이 있습니다."
           : policyRestricted
@@ -216,13 +216,13 @@
   function resetPolicyDraft() {
     policyRestricted = group.allowedMcpToolGroups !== null;
     policyDraft = new Set<McpToolGroupId>(
-      group.allowedMcpToolGroups ?? MCP_TOOL_GROUPS.map((g) => g.id),
+      effectiveMcpToolGroups(group.allowedMcpToolGroups),
     );
     policyError = "";
   }
 
   function togglePolicyGroup(id: McpToolGroupId, on: boolean) {
-    if (policyBusy) return;
+    if (policyBusy || isRequiredMcpToolGroup(id)) return;
     const next = new Set(policyDraft);
     if (on) next.add(id);
     else next.delete(id);
@@ -500,7 +500,7 @@
       <span class="tag">그룹원 {group.memberCount}</span>
       <span class="tag write">관리자 {group.adminCount}</span>
       {#if group.knowledgeRepo}<span class="tag accent">공용 저장소</span>{/if}
-      {#if group.allowedMcpToolGroups}<span class="tag danger">도구 제한 {group.allowedMcpToolGroups.length}/{MCP_TOOL_GROUPS.length}</span>{/if}
+      {#if group.allowedMcpToolGroups}<span class="tag danger">도구 제한 {effectiveMcpToolGroups(group.allowedMcpToolGroups).length}/{MCP_TOOL_GROUPS.length}</span>{/if}
       {#if !group.avatarSharing}<span class="tag read">아바타 상호 공개 꺼짐</span>{/if}
       {#if group.agentCount > 0}
         <span class="tag {group.enabledAgentCount > 0 ? 'write' : 'read'}">그룹 에이전트 {group.enabledAgentCount}/{group.agentCount}</span>
@@ -552,7 +552,7 @@
           <p class="muted">
             이 그룹의 그룹원이 아바타 대화에서 사용할 수 있는 MCP 도구 묶음을 제한합니다. 여러 그룹에 속한
             사용자는 정책이 있는 모든 그룹에서 공통으로 허용된 도구만 쓸 수 있습니다(교집합). 정책이 없는
-            그룹은 제한에 영향을 주지 않으며, 설정은 시스템 관리자만 바꿀 수 있습니다.
+            그룹은 제한에 영향을 주지 않으며, 설정은 시스템 관리자만 바꿀 수 있습니다. 시스템 도구는 항상 사용하며 개별 작업의 권한 검사는 유지됩니다.
           </p>
           <form class="settings-form" on:submit|preventDefault={savePolicy}>
             <label class="group-add-admin">
@@ -573,10 +573,10 @@
                       type="checkbox"
                       checked={policyDraft.has(toolGroup.id)}
                       aria-describedby={policyStatusId}
-                      disabled={policyBusy}
+                      disabled={policyBusy || isRequiredMcpToolGroup(toolGroup.id)}
                       on:change={(event) => togglePolicyGroup(toolGroup.id, event.currentTarget.checked)}
                     />
-                    <span>{toolGroup.labelKo}</span>
+                    <span>{toolGroup.labelKo}{isRequiredMcpToolGroup(toolGroup.id) ? " · 항상 사용" : ""}</span>
                   </label>
                 {/each}
               </div>

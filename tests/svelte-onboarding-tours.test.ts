@@ -179,7 +179,7 @@ describe("OnboardingModal — 체험 시나리오 cards", () => {
     // Written in the composer picker's order, not appended at the end.
     expect(pane.mcpToolGroups).toEqual(
       MCP_TOOL_GROUPS.map((group) => group.id).filter(
-        (id) => id === "browser" || selected.includes(id),
+        (id) => id === "browser" || id === "system" || selected.includes(id),
       ),
     );
   });

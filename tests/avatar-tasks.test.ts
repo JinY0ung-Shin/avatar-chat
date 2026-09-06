@@ -22,6 +22,7 @@ import { cancelAllRuns, openRun, closeRun, awaitResponse, emitRunEvent, getActiv
 import { Store } from "../src/server/store.js";
 import { BACKGROUND_TURN_PLACEHOLDER } from "../src/server/routes/chat.js";
 import { AVATAR_TASK_RESTART_ERROR } from "../src/server/store.js";
+import { readSystemManual } from "../src/server/agent/systemManual.js";
 
 const dir = withTempDir("avatar-tasks");
 let current: ReturnType<typeof createServices> | undefined;
@@ -45,6 +46,50 @@ async function boot() {
 const endpoint = "/api/v1/avatar/tasks";
 
 describe("avatar task API", () => {
+  it("executes the manual's submit, poll, respond and cancel examples against the API", async () => {
+    const { call, services, user } = await boot();
+    const guide = readSystemManual("external-tasks").text;
+    const examples = [...guide.matchAll(/~~~bash\n([\s\S]*?)\n~~~/g)].map(match => match[1]);
+    expect(examples).toHaveLength(4);
+    // Parse only the documented curl subset; never execute documentation as
+    // shell code. Requests use the real router, queue and response registry.
+    function example(index: number, taskId = "") {
+      const command = examples[index];
+      expect(command).toContain('-H "Authorization: Bearer $NOAH_API_KEY"');
+      const url = /"\$NOAH_URL([^"]+)"/.exec(command)![1].replace("$TASK_ID", taskId);
+      const json = /-d '([^']+)'/.exec(command)?.[1];
+      const body = json ? JSON.parse(json) : undefined;
+      const method = body || command.includes("-X POST") ? "post" : "get";
+      const req = call(method, url);
+      const idempotency = /'Idempotency-Key: ([^']+)'/.exec(command)?.[1];
+      if (idempotency) req.set("Idempotency-Key", idempotency);
+      return { req, body };
+    }
+    let answer: unknown;
+    H.script.push(async events => {
+      answer = await events.onQuestion?.({ dialogKind: "question", payload: { question: "어느 서비스인가요?" } });
+    });
+    const submit = example(0);
+    const task = (await submit.req.send(submit.body).expect(202)).body.task;
+    const replay = example(0);
+    expect((await replay.req.send(replay.body).expect(200)).body.task.id).toBe(task.id);
+    dispatchAvatarTasks(services);
+    let pending: any;
+    await vi.waitFor(async () => {
+      pending = (await example(1, task.id).req.expect(200)).body.task;
+      expect(pending.status).toBe("waiting_input");
+    });
+    const respond = example(2, task.id);
+    respond.body.requestId = pending.pendingRequests[0].data.requestId;
+    await respond.req.send(respond.body).expect(200);
+    await vi.waitFor(() => expect(services.store.getAvatarTask(user.id, task.id)?.status).toBe("succeeded"));
+    expect(answer).toEqual({ behavior: "completed", result: { service: "A" } });
+    expect((await example(1, task.id).req.expect(200)).body.task.result.text).toBe("작업 결과");
+    const queued = (await call("post", endpoint).send({ message: "next task", conversationId: task.conversationId }).expect(202)).body.task;
+    await example(3, queued.id).req.expect(200);
+    expect((await example(1, queued.id).req.expect(200)).body.task.status).toBe("cancelled");
+  });
+
   it("shows a token only at creation, scopes it to task APIs, and revokes it", async () => {
     const { owner, call, created, app, services, user } = await boot();
     const listed = await owner.get("/api/me/avatar-api-keys").expect(200);
@@ -366,7 +411,7 @@ describe("avatar task API", () => {
     const fresh = (await call("post", endpoint).send({ message: "기본값" }).expect(202)).body.task;
     dispatchAvatarTasks(services);
     await vi.waitFor(() => expect(services.store.getAvatarTask(user.id, fresh.id)?.status).toBe("succeeded"));
-    expect(H.requests[0]).toMatchObject({ modelTier: "haiku", effort: "low", mcpToolGroups: ["web"] });
+    expect(H.requests[0]).toMatchObject({ modelTier: "haiku", effort: "low", mcpToolGroups: ["web", "system"] });
     // A non-null request is persisted onto the thread, exactly as a first
     // interactive turn would leave it.
     expect(services.store.getConversationMcpToolGroups(user.id, fresh.conversationId)).toEqual(["web"]);
@@ -377,7 +422,7 @@ describe("avatar task API", () => {
     const next = (await call("post", endpoint).send({ message: "이어서", conversationId: fresh.conversationId }).expect(202)).body.task;
     dispatchAvatarTasks(services);
     await vi.waitFor(() => expect(services.store.getAvatarTask(user.id, next.id)?.status).toBe("succeeded"));
-    expect(H.requests[1]).toMatchObject({ modelTier: "sonnet", mcpToolGroups: ["canvas"] });
+    expect(H.requests[1]).toMatchObject({ modelTier: "sonnet", mcpToolGroups: ["canvas", "system"] });
   });
 
   it("treats a blank Idempotency-Key as no key at all", async () => {

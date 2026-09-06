@@ -319,9 +319,9 @@ export function planMcpToolFamilies(
     // handler — keeps `registered` honest, so the avatar never advertises a
     // tool it cannot call.
     browser: has("browser") && !groupAgentRun,
-    system: has("system"),
+    system: true,
   };
-  const registered = enabled.filter((id) => byId[id]);
+  const registered = effectiveMcpToolGroups(enabled).filter((id) => byId[id]);
   return {
     personalKnowledge: byId.personal_knowledge,
     groupKnowledge: byId.group_knowledge,
@@ -495,20 +495,19 @@ export async function buildAgentRunPlan(
   // policy-bearing groups (null = unrestricted). Clamped HERE — the single
   // choke point every runAgentStream caller (chat, routines, headless
   // generators) passes through — so a blocked group's MCP servers are never
-  // even registered, whatever selection the caller passed. Read fresh per run
+  // even registered, whatever selection the caller passed. System is the
+  // mandatory exception; its handlers still enforce access. Read fresh per run
   // like the other policies, so a panel change applies from the next turn.
   const adminAllowedMcpToolGroups = store.allowedMcpToolGroupsForUser(
     request.viewerUserId ?? request.avatar.id,
   );
   const enabledMcpToolGroups = effectiveMcpToolGroups(
     request.mcpToolGroups,
-  ).filter(
-    (id) =>
-      !adminAllowedMcpToolGroups || adminAllowedMcpToolGroups.includes(id),
+    adminAllowedMcpToolGroups,
   );
   const adminBlockedMcpToolGroups = adminAllowedMcpToolGroups
     ? DEFAULT_MCP_TOOL_GROUPS.filter(
-        (id) => !adminAllowedMcpToolGroups.includes(id),
+        (id) => id !== "system" && !adminAllowedMcpToolGroups.includes(id),
       )
     : [];
   // GROUP SHARED-AGENT run: a hard capability boundary on top of the composer's

@@ -2083,7 +2083,9 @@ describe("system tools (avatar system management)", () => {
     expect(SYSTEM_TOOL_NAMES).toContain("mcp__system__create_routine");
     expect(SYSTEM_TOOL_NAMES).toContain("mcp__system__add_plugin");
     expect(SYSTEM_TOOL_NAMES).toContain("mcp__system__notify_user");
+    expect(SYSTEM_TOOL_NAMES).toContain("mcp__system__read_manual");
     expect(toolsFor(s).map((t) => t.name)).toEqual([
+      "read_manual",
       "describe_system",
       "notify_user",
       "list_recent_conversations",
@@ -2965,7 +2967,7 @@ describe("system tools (avatar system management)", () => {
     expect(body).not.toContain("claude-admin-default");
     expect(body).toContain("Reasoning effort: low (");
     expect(body).toContain("(chosen for this conversation)");
-    expect(body).toContain("MCP tool groups enabled for this conversation: (none)");
+    expect(body).toContain("MCP tool groups enabled for this conversation: system management");
     expect(body).toContain("Autocompact window: 120000 tokens (AUTO_COMPACT_WINDOW)");
     expect(body).toContain("Name: 노아");
     expect(body).toContain("Profile visibility: private (owner only)");

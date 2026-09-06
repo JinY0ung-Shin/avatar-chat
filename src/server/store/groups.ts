@@ -16,6 +16,7 @@ import {
 } from "./internal.js";
 import {
   normalizeMcpToolGroups,
+  effectiveMcpToolGroups,
   type McpToolGroupId,
 } from "../../shared/mcpToolGroups.js";
 import { groupAgentAvatarId } from "../groupAgents.js";
@@ -348,7 +349,8 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
             ? [...policy]
             : allowed.filter((id) => policy.includes(id));
       }
-      return allowed;
+      // Existing stored policies need no migration: system is always available.
+      return allowed === null ? null : effectiveMcpToolGroups(allowed);
     }
 
     // ---- Group knowledge repo --------------------------------------------

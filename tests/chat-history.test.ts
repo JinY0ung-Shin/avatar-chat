@@ -112,7 +112,7 @@ describe("chat history fallback", () => {
       .expect(200);
 
     expect(capturedRequests).toHaveLength(1);
-    expect(capturedRequests[0].mcpToolGroups).toEqual(["confluence"]);
+    expect(capturedRequests[0].mcpToolGroups).toEqual(["confluence", "system"]);
 
     const saved = await owner.get(`/api/messages?conversationId=${conversationId}`).expect(200);
     expect(saved.body.selectedMcpToolGroups).toEqual(["confluence"]);
@@ -123,7 +123,7 @@ describe("chat history fallback", () => {
       .expect(200);
 
     expect(capturedRequests).toHaveLength(2);
-    expect(capturedRequests[1].mcpToolGroups).toEqual(["confluence"]);
+    expect(capturedRequests[1].mcpToolGroups).toEqual(["confluence", "system"]);
   });
 });
 

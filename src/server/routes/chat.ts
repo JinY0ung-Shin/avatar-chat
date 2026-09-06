@@ -43,6 +43,7 @@ import { redactSecretValues } from "../agent/postToolUseHook.js";
 import {
   DEFAULT_MCP_TOOL_GROUPS,
   normalizeMcpToolGroups,
+  effectiveMcpToolGroups,
   type McpToolGroupId,
 } from "../../shared/mcpToolGroups.js";
 import {
@@ -825,16 +826,14 @@ export async function executeChatTurn(
   // composer selection and what the system admin allows for this user
   // (null = unrestricted). The per-conversation row keeps the user's RAW
   // choice — lifting the policy later restores it untouched. claudeAgent
-  // re-clamps identically; this local copy exists because git-repo gating
+  // re-clamps identically, always retaining system; this local copy exists because git-repo gating
   // below must see the same effective set BEFORE the run starts.
   const adminAllowedMcpToolGroups = store.allowedMcpToolGroupsForUser(
     ownerUserId,
   );
-  const effectiveMcpToolGroupsForRun = adminAllowedMcpToolGroups
-    ? conversationMcpToolGroups.filter((id) =>
-        adminAllowedMcpToolGroups.includes(id),
-      )
-    : conversationMcpToolGroups;
+  const effectiveMcpToolGroupsForRun = effectiveMcpToolGroups(
+    conversationMcpToolGroups, adminAllowedMcpToolGroups,
+  );
   const gitRepoToolsEnabled =
     effectiveMcpToolGroupsForRun.includes("git_repo");
   // A run is already streaming for this conversation. This POST carries a NEW

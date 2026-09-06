@@ -47,7 +47,8 @@
   import {
     DEFAULT_MCP_TOOL_GROUPS,
     MCP_TOOL_GROUPS,
-    normalizeMcpToolGroups,
+    effectiveMcpToolGroups,
+    isRequiredMcpToolGroup,
     type McpToolGroupId,
   } from "../../../shared/mcpToolGroups";
   import { TOUR_SCENARIOS, type TourScenario } from "../../../shared/tourScenarios";
@@ -253,7 +254,7 @@
 
   function selectedMcpToolGroups(item: ChatPane): McpToolGroupId[] {
     const selected = item.mcpToolGroups ?? DEFAULT_MCP_TOOL_GROUPS;
-    return normalizeMcpToolGroups(selected);
+    return effectiveMcpToolGroups(selected);
   }
 
   // Admin per-group tool policy from /api/me (`user.allowedMcpToolGroups`, the
@@ -266,7 +267,7 @@
     const allowed = $appState.user?.allowedMcpToolGroups;
     if (!allowed) return new Set<McpToolGroupId>();
     return new Set<McpToolGroupId>(
-      MCP_TOOL_GROUPS.map((group) => group.id).filter((id) => !allowed.includes(id)),
+      MCP_TOOL_GROUPS.map((group) => group.id).filter((id) => !isRequiredMcpToolGroup(id) && !allowed.includes(id)),
     );
   })();
 
@@ -1182,7 +1183,7 @@
 
   function setMcpToolGroup(item: ChatPane, groupId: McpToolGroupId, on: boolean) {
     // Admin-blocked groups are disabled in the picker; ignore any stray toggle.
-    if (adminBlockedMcpToolGroupSet.has(groupId)) return;
+    if (isRequiredMcpToolGroup(groupId) || adminBlockedMcpToolGroupSet.has(groupId)) return;
     const current = new Set(selectedMcpToolGroups(item));
     if (on) current.add(groupId);
     else current.delete(groupId);
@@ -1896,12 +1897,12 @@
               <input
                 type="checkbox"
                 checked={selectedMcpToolGroups(item).includes(group.id) && !adminBlocked}
-                disabled={adminBlocked}
+                disabled={isRequiredMcpToolGroup(group.id) || adminBlocked}
                 on:change={(event) => setMcpToolGroup(item, group.id, event.currentTarget.checked)}
               />
               <span>
                 <strong>{group.labelKo}</strong>
-                <small>{adminBlocked ? "관리자의 그룹 도구 정책으로 제한된 도구 묶음입니다" : group.descriptionKo}</small>
+                <small>{isRequiredMcpToolGroup(group.id) ? "항상 사용 · 매뉴얼과 시스템 상태를 확인합니다. 설정 변경은 기존 권한을 따릅니다." : adminBlocked ? "관리자의 그룹 도구 정책으로 제한된 도구 묶음입니다" : group.descriptionKo}</small>
               </span>
             </label>
           {/each}

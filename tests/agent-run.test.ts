@@ -268,6 +268,35 @@ function setup(configOverrides: Partial<AppConfig> = {}) {
 // runClaudeAgent orchestration (real run loop against the scripted SDK)
 // ===========================================================================
 describe("runClaudeAgent orchestration (SDK mocked)", () => {
+  it("retains system tools when an old admin policy blocks every optional group", async () => {
+    const { config, store, baseRequest } = setup();
+    vi.spyOn(store, "allowedMcpToolGroupsForUser").mockReturnValue([]);
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+    await runAgentStream(baseRequest, [], config, store, makeEvents());
+    const { options } = sdkMock.calls[0];
+    const servers = options.mcpServers as Record<string, unknown>;
+    expect(servers.system).toBeDefined();
+    expect(servers.web).toBeUndefined();
+    expect(servers.git_repo).toBeUndefined();
+    expect(options.allowedTools).toContain("mcp__system__read_manual");
+    expect(options.allowedTools).toContain("mcp__system__describe_system");
+    expect((options.systemPrompt as { append: string }).append).toContain("System tools are always available");
+  });
+
+  it.each([true, false])("always registers system tools regardless of saved selection (selected=%s)", async (enabled) => {
+    const { config, store, baseRequest } = setup();
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+    await runAgentStream({ ...baseRequest, mcpToolGroups: enabled ? ["system"] : [] }, [], config, store, makeEvents());
+    const { options } = sdkMock.calls[0];
+    const allowed = options.allowedTools as string[];
+    const servers = options.mcpServers as Record<string, unknown>;
+    const prompt = options.systemPrompt as { append: string };
+    expect(allowed).toContain("mcp__system__read_manual");
+    expect(servers.system).toBeDefined();
+    expect(prompt.append).toContain("mcp__system__read_manual");
+    expect(prompt.append).toContain("external-tasks: External Task API integration");
+  });
+
   it("streams session id, model, and deltas, then maps the result + getContextUsage occupancy", async () => {
     const { config, store, baseRequest } = setup();
     const events = makeEvents();

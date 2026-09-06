@@ -1637,7 +1637,7 @@ describe("group avatar-sharing policy", () => {
       knowledgeRepoConfigured: true,
       avatarSharing: false,
     });
-    expect(store.allowedMcpToolGroupsForUser(friendId)).toEqual(["personal_knowledge"]);
+    expect(store.allowedMcpToolGroupsForUser(friendId)).toEqual(["personal_knowledge", "system"]);
     expect(store.listGroupMembers(group.id)).toHaveLength(2);
   });
 

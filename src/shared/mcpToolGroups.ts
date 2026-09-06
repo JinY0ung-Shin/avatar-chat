@@ -57,7 +57,7 @@ export const MCP_TOOL_GROUPS = [
     id: "system",
     labelKo: "시스템",
     labelEn: "system management",
-    descriptionKo: "상태 확인, 예약 작업, 플러그인, 알림",
+    descriptionKo: "사용 매뉴얼, 상태 확인, 예약 작업, 플러그인, 알림",
   },
 ] as const;
 
@@ -84,12 +84,23 @@ export function normalizeMcpToolGroups(raw: unknown): McpToolGroupId[] {
   return out;
 }
 
-export function effectiveMcpToolGroups(raw: unknown): McpToolGroupId[] {
-  return raw == null ? [...DEFAULT_MCP_TOOL_GROUPS] : normalizeMcpToolGroups(raw);
+/** System awareness/manual access is mandatory; handlers still enforce roles. */
+export function isRequiredMcpToolGroup(id: McpToolGroupId): boolean {
+  return id === "system";
+}
+
+/** Resolve legacy selections and policy together without mutating saved choices. */
+export function effectiveMcpToolGroups(
+  raw: unknown,
+  allowed?: readonly McpToolGroupId[] | null,
+): McpToolGroupId[] {
+  const selected = raw == null ? [...DEFAULT_MCP_TOOL_GROUPS] : normalizeMcpToolGroups(raw);
+  if (!selected.includes("system")) selected.push("system");
+  return selected.filter(id => isRequiredMcpToolGroup(id) || !allowed || allowed.includes(id));
 }
 
 export function allMcpToolGroupsSelected(groups: readonly McpToolGroupId[]): boolean {
-  return DEFAULT_MCP_TOOL_GROUPS.every((id) => groups.includes(id));
+  return DEFAULT_MCP_TOOL_GROUPS.every((id) => isRequiredMcpToolGroup(id) || groups.includes(id));
 }
 
 export function mcpToolGroupLabelEn(id: McpToolGroupId): string {

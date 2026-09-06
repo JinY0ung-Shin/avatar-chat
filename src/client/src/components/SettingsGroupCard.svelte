@@ -36,7 +36,7 @@
   import { repoToHref } from "../lib/format";
   import { downscaleImageToDataUrl } from "../lib/dom";
   import type { AvatarSummary, GroupSharedSkill, RepoPluginContents } from "../lib/types";
-  import { MCP_TOOL_GROUPS } from "../../../shared/mcpToolGroups";
+  import { MCP_TOOL_GROUPS, effectiveMcpToolGroups } from "../../../shared/mcpToolGroups";
   import AvatarImage from "./AvatarImage.svelte";
   import Icon from "./Icon.svelte";
   import SettingsPluginSelect from "./SettingsPluginSelect.svelte";
@@ -57,7 +57,7 @@
   $: policyAllowedLabels = (() => {
     const allowed = group.allowedMcpToolGroups;
     if (!allowed) return null;
-    return MCP_TOOL_GROUPS.filter((g) => allowed.includes(g.id)).map((g) => g.labelKo);
+    return MCP_TOOL_GROUPS.filter((g) => effectiveMcpToolGroups(allowed).includes(g.id)).map((g) => g.labelKo);
   })();
 
   function groupPanelId(suffix: string): string {

@@ -669,11 +669,13 @@ describe("admin: group tool policy", () => {
       "web",
       "ssh",
       "git_repo",
+      "system",
     ]);
     expect(services.store.getUserById(bob.id)!.allowedMcpToolGroups).toEqual([
       "web",
       "ssh",
       "git_repo",
+      "system",
     ]);
 
     // Members see the group's policy read-only on /api/me/groups.
@@ -689,7 +691,7 @@ describe("admin: group tool policy", () => {
       .put(`/api/admin/groups/${guestsId}/tool-policy`)
       .send({ allowed: ["web", "canvas"] })
       .expect(200);
-    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toEqual(["web"]);
+    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toEqual(["web", "system"]);
 
     // A policy-LESS third group never narrows the result.
     const miscId = await createGroup(admin, "misc");
@@ -697,14 +699,14 @@ describe("admin: group tool policy", () => {
       .post(`/api/admin/groups/${miscId}/members`)
       .send({ username: "bob" })
       .expect(200);
-    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toEqual(["web"]);
+    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toEqual(["web", "system"]);
 
-    // Disjoint policies intersect to [] — nothing allowed.
+    // Disjoint policies block every optional group; system stays mandatory.
     await admin.agent
       .put(`/api/admin/groups/${guestsId}/tool-policy`)
       .send({ allowed: ["canvas"] })
       .expect(200);
-    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toEqual([]);
+    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toEqual(["system"]);
 
     // The store setter normalizes unknown ids on WRITE too (defense in depth
     // for non-route callers); the route itself rejects them with 400.

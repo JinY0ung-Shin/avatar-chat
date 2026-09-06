@@ -7,6 +7,11 @@ plain colleagues, elevated (write/SSH/repo) for owners and group co-members.
 
 ## What it does
 
+- **Built-in usage manual**: local avatars receive a compact feature index on every turn and
+  read detailed guides through `mcp__system__read_manual` (the always-on system tool group). Guides cover
+  setup, chat, knowledge, skills/plugins, groups/bots, scheduling, external Task API integration,
+  repositories, browser/web, credentials/SSH, artifacts and administration. Current account
+  capabilities are checked separately through `describe_system`.
 - **Accounts**: self-service signup with username + password (no invite codes). The
   first user to sign up becomes the **admin**. SQLite-backed users + roles (`admin`/`member`).
 - **Avatar profile**: display name, uploaded profile picture (with a generated

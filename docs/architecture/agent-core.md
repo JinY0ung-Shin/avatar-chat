@@ -33,6 +33,35 @@ moved symbols so importers keep their paths:
   derivation over store/config/plugins, and the loop half owns every accumulator.
 Keep the re-export set in `claudeAgent.ts` minimal to the original public surface.
 
+### Official product manual
+
+`agent/systemManual.ts` is the canonical English, agent-facing product manual, compiled into the
+server output (no runtime docs-directory/cwd/network dependency). Its short topic index appears in
+every local avatar system prompt; full pages are returned only by `mcp__system__read_manual`.
+The `system` MCP group is always registered for local avatars, including old conversations/defaults
+or admin policies that omit it. `effectiveMcpToolGroups(selection, policy)` applies this invariant
+at both the chat preflight and run-plan boundary; the effective store policy and UI reflect it too.
+The composer and admin policy editor display system as checked and non-toggleable. Management
+handlers still enforce owner/group/bot scope, so tool registration does not grant new privileges.
+The manual tool is intentionally public: it reads only static allowlisted topics, never user state
+or files. An unknown topic returns the valid index with an error instead of resolving a path.
+`describe_system` points to the same manual; live state and permissions still come from its existing
+scoped readers. External gateway avatars do not receive this local prompt/tool set.
+
+The standing prompt uses a compact topic index. Browser, canvas and working-repository blocks
+keep current scope, safety rules and a BEFORE-use manual trigger; long procedures live in
+`browser-operations`, `canvas-operations` and `git-repositories`. Do not move identity, actual
+permissions, secret policy, untrusted-input rules or task provenance into optional lookup text.
+
+When a product workflow changes, update the relevant manual topic alongside its implementation
+and the existing prompt/state surfaces. Keep usage steps, UI labels, required roles, examples and
+limitations accurate; verify API examples against route schemas. The external-tasks topic is the
+agent-facing companion of `docs/avatar-task-api.md`; update both when the API contract changes.
+Do not add account-specific values or runtime availability assertions to the static manual.
+`system-manual.test.ts` covers topic lookup and public access without store reads; agent core/run
+tests cover prompt/registration gating, and `avatar-tasks.test.ts` exercises the manual's curl
+examples against the actual API with a mocked agent.
+
 ### The one thing that flows backwards across that seam
 `buildAgentRunPlan` takes a `currentTextAnchor: () => number` **accessor**, not a value or an array.
 File-output (`show_file`/`share_file`) and browser-screenshot attachments are stamped with the length of

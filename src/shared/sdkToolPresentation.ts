@@ -204,6 +204,7 @@ export const MCP_TOOL_LABELS: Record<string, string> = {
   mcp__knowledge__request_info: "정보 요청 기록",
   mcp__knowledge__resolve_request: "요청 처리 완료",
   mcp__system__notify_user: "사용자 알림",
+  mcp__system__read_manual: "시스템 사용 매뉴얼 조회",
   mcp__web__fetch: "웹 페이지 읽기",
 };
 

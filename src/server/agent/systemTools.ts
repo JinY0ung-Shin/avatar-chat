@@ -17,13 +17,14 @@ import {
   summarizeOwnerState,
   summarizePersonalAgentState,
 } from "./ownerState.js";
-import { MCP_TOOL_GROUPS, type McpToolGroupId } from "../../shared/mcpToolGroups.js";
+import { MCP_TOOL_GROUPS, effectiveMcpToolGroups, type McpToolGroupId } from "../../shared/mcpToolGroups.js";
 import {
   MAX_DELEGATION_DEPTH,
   MAX_DELEGATIONS_PER_TURN,
 } from "../personalAgents.js";
 import type { ToolSkillPolicy } from "../toolSkillPolicy.js";
 import { webFetchProxyState } from "./webFetchTools.js";
+import { readSystemManual } from "./systemManual.js";
 
 /**
  * Per-conversation context for avatar-system management tools. These tools let
@@ -156,6 +157,7 @@ export const SYSTEM_SERVER_NAME = "system";
 /** Tool names the model may call, in `allowedTools` form. */
 export const SYSTEM_TOOL_NAMES = [
   "mcp__system__describe_system",
+  "mcp__system__read_manual",
   "mcp__system__notify_user",
   "mcp__system__list_recent_conversations",
   "mcp__system__read_conversation",
@@ -263,11 +265,25 @@ function actor(ctx: SystemToolsContext) {
 
 /**
  * Build system-management tool definitions bound to a single conversation.
- * Handler-level owner gating is the safety boundary; the SDK may see the tool
- * names, but non-owner/headless calls get a refusal result.
+ * Management handlers enforce owner/scope checks themselves. read_manual is
+ * deliberately public/static; describe_system also provides a public overview
+ * while restricting private state to its authorized owner/group/bot scope.
  */
 export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
   return [
+    tool(
+      "read_manual",
+      "Reads the official Noah product manual bundled with this server. When asked how to use, configure or integrate a Noah feature, read its guide before giving detailed instructions or API examples. Omit topic to list all guides; then use an exact topic id, e.g. external-tasks for submit/poll/respond/cancel curl examples. Public documentation only, available to every viewer of this tool; no account data or settings are read or changed. Verify current configuration separately with describe_system.",
+      {
+        topic: z.string().max(80).optional().describe("Exact manual topic id; omit or use index for the table of contents."),
+      },
+      async ({ topic }) => {
+        // Intentionally public: only compiled, allowlisted documentation is
+        // returned. No store reads, filesystem paths, or owner privilege needed.
+        const result = readSystemManual(topic);
+        return text(result.text, result.isError);
+      },
+    ),
     tool(
       "describe_system",
       "Summarizes the current avatar system's structure and the settings this avatar can manage. For the owner, it includes the current state (profile visibility, intro, hashtags; knowledge repository; general git repos; groups and roles; secret names; whether SSH is enabled; plugins; routines; pending information requests). When asked about your own settings or state, call this tool first instead of guessing.",
@@ -276,6 +292,8 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         const user = store.getUserById(ctx.avatarUserId);
         const publicGuide = [
           "Noah Almighty avatar-chat system summary:",
+          "- System tools are always available on local avatar runs; individual handlers still enforce owner, group and bot scope. Other tool groups follow the current selection and policy.",
+          "- Official usage manual: call mcp__system__read_manual (omit topic for the index) for setup steps, examples and limitations. Use topic external-tasks for the external Task API. The manual documents features; the current state below determines this run's actual capabilities.",
           "- The avatar converses by loading its profile/persona, base skills, owner plugins, and personal knowledge repository together.",
           "- The knowledge repository is a personal repo where the avatar can directly create and commit files and skills.",
           "- Plugins are added via a GitHub repo or git URL and load starting from the next conversation.",
@@ -338,7 +356,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           const gaEffortLine = gaEffort
             ? `${gaEffortLabel(gaEffort) ? `${gaEffort} (${gaEffortLabel(gaEffort)})` : gaEffort} (chosen for this conversation)`
             : `${gaEffortLabel(DEFAULT_EFFORT_LEVEL) ? `${DEFAULT_EFFORT_LEVEL} (${gaEffortLabel(DEFAULT_EFFORT_LEVEL)})` : DEFAULT_EFFORT_LEVEL} (default)`;
-          const gaEnabled = ctx.enabledMcpToolGroups ?? MCP_TOOL_GROUPS.map((group) => group.id);
+          const gaEnabled = effectiveMcpToolGroups(ctx.enabledMcpToolGroups);
           const gaLabels = MCP_TOOL_GROUPS
             .filter((group) => gaEnabled.includes(group.id))
             .map((group) => group.labelEn);
@@ -438,7 +456,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         const effortLine = userEffort
           ? `${effortLabel(userEffort) ? `${userEffort} (${effortLabel(userEffort)})` : userEffort} (chosen for this conversation)`
           : `${effortLabel(DEFAULT_EFFORT_LEVEL) ? `${DEFAULT_EFFORT_LEVEL} (${effortLabel(DEFAULT_EFFORT_LEVEL)})` : DEFAULT_EFFORT_LEVEL} (default)`;
-        const enabledMcpToolGroups = ctx.enabledMcpToolGroups ?? MCP_TOOL_GROUPS.map((group) => group.id);
+        const enabledMcpToolGroups = effectiveMcpToolGroups(ctx.enabledMcpToolGroups);
         const webProxy = webFetchProxyState();
         const enabledMcpToolGroupLabels = MCP_TOOL_GROUPS
           .filter((group) => enabledMcpToolGroups.includes(group.id))

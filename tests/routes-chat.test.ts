@@ -2578,7 +2578,7 @@ describe("admin MCP tool policy clamps the run", () => {
       .expect(200);
 
     // The RUN is clamped…
-    expect(H.requests[0].mcpToolGroups).toEqual(["confluence"]);
+    expect(H.requests[0].mcpToolGroups).toEqual(["confluence", "system"]);
     // …while the conversation keeps the user's untouched choice, so lifting the
     // policy later restores it.
     const msgs = await owner.get("/api/messages?conversationId=conv-policy").expect(200);

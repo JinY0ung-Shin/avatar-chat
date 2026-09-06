@@ -46,6 +46,16 @@ The **user prompt is a separate layer** (`buildUserPrompt`, NOT in `system`):
 stored-history fallback (only when there is no `resume` session) + the turn's
 `User message:` / `Task instruction:`.
 
+### Manual-based prompt reduction (2026-09)
+
+The measurements above describe the older capture, not the current append. Local avatars now
+always have the system MCP group. Their append carries a compact manual topic index, live state,
+role/secret/security boundaries and action triggers. Full browser/clipboard, canvas and working-Git
+procedures are retrieved with `mcp__system__read_manual` before using those capabilities; usage
+and integration questions also trigger lookup. See [agent-core](architecture/agent-core.md#official-product-manual).
+This reduces the standing APP APPEND only: the SDK preset and tool schemas/descriptions remain
+separate costs, and a retrieved guide consumes context on the turns that need it.
+
 ## `tools` = the real token weight
 
 Every tool (built-in AND `mcp__*`) is advertised as one `{name, description, input_schema}`
