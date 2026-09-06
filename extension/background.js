@@ -4120,6 +4120,26 @@ async function writeSecretField(ref, target, policy, value, clear, insert) {
  * matters because this runs on EVERY type and fill_form field, including the
  * insert-at-cursor path that costs no read-back today.
  */
+/**
+ * Roles that say "this is one cell of a data grid". A cell is NOT a text
+ * control: its grid keeps keyboard focus on a proxy of its own, opens a
+ * floating editor on a printable keydown, and commits on Enter — so the text
+ * path's Input.insertText lands nowhere (measured on handsontable.com/demo:
+ * the write reported success while the cell kept its value), and DOM.focus on
+ * the cell moves DOM focus WITHOUT moving the grid's selection, sending the
+ * keystroke replay into whichever cell the grid still considers selected
+ * (round15-facts.spec.ts phase G committed into the row BELOW the target).
+ */
+const CELL_ROLES = new Set(["gridcell", "cell", "columnheader", "rowheader"]);
+
+/** A shape the browser itself can edit — where the ordinary text path is sound. */
+function nativelyEditableShape(shape) {
+  const nodeName = shape?.nodeName;
+  if (nodeName === "INPUT" || nodeName === "TEXTAREA" || nodeName === "SELECT") return true;
+  const editable = attrOf(shape, "contenteditable");
+  return Boolean(editable && editable !== "false");
+}
+
 async function inputKind(ref, shape) {
   if (shape?.nodeName === "INPUT") {
     const type = attrOf(shape, "type");
@@ -4129,11 +4149,15 @@ async function inputKind(ref, shape) {
   const role = attrOf(shape, "role");
   if (role === "slider") return "slider";
   if (role === "spinbutton") return "spinbutton";
+  // A cell that is itself editable (a contenteditable td) takes text directly;
+  // only the plain widget cell needs the grid's own click-type-Enter grammar.
+  if (CELL_ROLES.has(role) && !nativelyEditableShape(shape)) return "cell";
   if (role) return "text";
   if (shape?.nodeName === "INPUT" || shape?.nodeName === "TEXTAREA") return "text";
   const editable = attrOf(shape, "contenteditable");
   if (editable && editable !== "false") return "text";
-  const axRole = (await readAxNode(ref))?.role?.value;
+  const axNode = await readAxNode(ref);
+  const axRole = axNode?.role?.value;
   if (axRole === "slider") return "slider";
   // A date/time input's year-month-day parts live in UA shadow DOM with no DOM
   // role at all; only the accessibility tree calls them what they are. They
@@ -4141,6 +4165,9 @@ async function inputKind(ref, shape) {
   // reported success while the field stayed "0"), so they must never reach the
   // text path.
   if (axRole === "spinbutton") return "spinbutton";
+  // A <td> in a data grid usually carries no DOM role either — the AX tree is
+  // what calls it a cell (handsontable.com/demo's tds).
+  if (CELL_ROLES.has(String(axRole)) && !nativelyEditableShape(shape)) return "cell";
   return "text";
 }
 
@@ -4273,6 +4300,78 @@ async function driveSlider(ref, valueStr, shape, axNode) {
     `Setting the slider to ${wanted} did not take: it now reads ${quoteForNote(landed)} ` +
       `(min ${plan.min}, max ${plan.max}, step ${plan.step}). The page may snap or override keyboard input — ` +
       "try mcp__browser__click_at at a fraction of the slider's track, or ask the user to set it.",
+  );
+}
+
+/** Most characters worth replaying into one grid cell — more is not cell data. */
+const CELL_REPLAY_MAX = 300;
+
+/**
+ * Write one grid cell the way a person does: CLICK it (a real click moves the
+ * grid's own selection with the focus — DOM.focus moves only the focus, and
+ * the keys then land on whichever cell the grid still considers selected),
+ * type the value (real per-character keys, the only input a grid's floating
+ * editor is opened by; Input.insertText lands nowhere — both measured in
+ * round15-facts.spec.ts), and press Enter, the commit gesture every
+ * spreadsheet shares. Committing here is not a liberty taken: an uncommitted
+ * floating editor is invisible to the read-back AND left blocking the next op,
+ * and Escape still undoes a commit's sibling (the caller was told which
+ * gesture was used). The landing is then read back off the CELL itself and
+ * quoted rather than assumed, in both directions.
+ */
+async function writeGridCell(ref, value) {
+  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  if (/[\r\n]/.test(value)) {
+    throw new Error(
+      "This element is a grid cell, and a grid commits on Enter — a multi-line value would be " +
+        "scattered across cells. Type one cell's value at a time, without newlines.",
+    );
+  }
+  const sent = [...value].length;
+  if (sent > CELL_REPLAY_MAX) {
+    throw new Error(
+      `This element is a grid cell, which takes keyboard input only, and replaying ${sent} characters ` +
+        `as keys is not reliable. Keep a cell value under ${CELL_REPLAY_MAX} characters.`,
+    );
+  }
+  await clickNode(ref);
+  // A click can OPEN the grid's editor pre-loaded with the old value: grids
+  // count their own double-clicks, and the agent's previous op often clicked
+  // this same cell moments ago — the replay then APPENDS ("James BrownSEQH",
+  // measured in round15-facts.spec.ts phase H before this Escape existed).
+  // Escape closes such an editor WITHOUT committing and keeps the selection;
+  // with no editor open it is a no-op — so typing below always starts the
+  // fresh-editor path, which is what REPLACES a cell's value.
+  await dispatchKey(target, "Escape", 0);
+  for (const ch of [...value]) {
+    // Same guard the other key walks press under: a change handler can raise a
+    // dialog mid-write, and keys queued into a frozen renderer strand it.
+    if (pendingDialogs.has(ref.tabId)) return "";
+    await dispatchKey(target, ch, 0);
+  }
+  if (pendingDialogs.has(ref.tabId)) return "";
+  // An empty value means "empty this cell": Delete is the gesture that does
+  // that from a closed cell, and it needs no commit.
+  if (!value) await dispatchKey(target, "Delete", 0);
+  else await dispatchKey(target, "Enter", 0);
+  await new Promise((resolve) => setTimeout(resolve, VALUE_SETTLE_MS));
+  const node = await readAxNode(ref);
+  // A cell shows its content as its accessible NAME (its value is usually
+  // empty) — read both, verify against whichever answers.
+  const landedName = String(node?.name?.value ?? "").trim();
+  const landedValue = String(axValueAnswer(node) ?? "").trim();
+  const landed = landedValue || landedName;
+  const took = value
+    ? normalizedForCompare(landed).includes(normalizedForCompare(value))
+    : landed === "";
+  const how =
+    "This element is a grid cell, so it was written the way a person does — click, type, Enter — and " +
+    "the grid commits on Enter (clear/keystrokes flags do not apply: typing replaces a cell's value). ";
+  if (took) return `${how}The cell now reads ${quoteForNote(landed)}.`;
+  return (
+    `${how}The read-back could NOT confirm it: the cell now reads ${quoteForNote(landed)} — the grid ` +
+    "may have reformatted the value, refused it, or kept its editor open. Check the returned snapshot " +
+    "before building on this cell."
   );
 }
 
@@ -4428,6 +4527,10 @@ async function fillField(ref, value, clear, pre, secret) {
   // `clear` is meaningless on a slider — there is no text to replace — so the
   // control is driven as what it is, whichever flags the caller passed.
   if (kind === "slider") return driveSlider(ref, value, shape);
+  // Same rule for a grid cell: it has ONE input grammar (click, type, Enter),
+  // and writeGridCell does its own focusing — a real click, never DOM.focus,
+  // which moves focus without moving the grid's selection.
+  if (kind === "cell") return writeGridCell(ref, value);
   await focusForInput(ref);
   // Whichever flags the caller passed, same as the slider: keys are the only
   // input a spinbutton takes, and they overwrite by nature.
@@ -4502,6 +4605,10 @@ async function typeRef(uid, value, submit, keystrokes, clear, secret) {
     // Ahead of the keystrokes branch deliberately: a per-character replay is
     // text entry too, and a slider has no text to enter.
     note = await driveSlider(ref, value, pre.shape);
+  } else if (pre.kind === "cell") {
+    // Whichever flags the caller passed, same as the slider: a grid cell is
+    // driven the one way a grid accepts input — see writeGridCell.
+    note = await writeGridCell(ref, value);
   } else if (keystrokes) {
     await focusForInput(ref);
     // Same ladder, same verification; the replay IS this mode's insert path, so
@@ -5555,6 +5662,11 @@ async function reattachAfterEscape(tabId) {
 
 async function performOp(message, stagingOrigin) {
   const { patterns, source } = await readPolicy();
+  // The uid counter as it stands BEFORE this op acts: any uid above it in the
+  // confirm snapshot belongs to an element that APPEARED because of the action
+  // (a menu's popup items, a dialog's controls), which capSnapshot keeps ahead
+  // of the document-order bulk — see its newUidFloor pass.
+  const uidFloorBefore = refSeq;
   // Once per op, so every showActionHighlight below stays a synchronous check
   // that cannot add a round trip to the action it is illustrating.
   highlightActionsOn = await readHighlightPref();
@@ -6698,11 +6810,14 @@ async function performOp(message, stagingOrigin) {
       : await buildSnapshot(fresh, anchor ? { anchor } : undefined);
     const focusUid = explicitFocus || anchor?.uid || "";
     const fallbackFocusUid = anchor?.uid && anchor.uid !== focusUid ? anchor.uid : "";
-    return capSnapshot(
-      atoms,
-      snapshotChars,
-      focusUid ? { focusUid, ...(fallbackFocusUid ? { fallbackFocusUid } : {}) } : undefined,
-    );
+    // Only an ACTING op gets the new-uid floor: a plain snapshot after a
+    // navigation mints the whole page as "new", which would just re-derive
+    // document order at a quarter of the budget.
+    const capOpts = {
+      ...(focusUid ? { focusUid, ...(fallbackFocusUid ? { fallbackFocusUid } : {}) } : {}),
+      ...(INPUT_OPS.has(message.op) ? { newUidFloor: uidFloorBefore } : {}),
+    };
+    return capSnapshot(atoms, snapshotChars, Object.keys(capOpts).length ? capOpts : undefined);
   };
   // wait_for is the exception: it answers a yes/no question, and re-walking the
   // page to decorate that answer cost ~25 KB on the one op whose whole job is to

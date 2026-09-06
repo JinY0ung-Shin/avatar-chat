@@ -3895,3 +3895,80 @@ describe("clipboard staging auto-close", () => {
     });
   });
 });
+
+describe("capSnapshot newUidFloor (round 15 — a menu's just-appeared items)", () => {
+  const oldLines = Array.from(
+    { length: 30 },
+    (_, i) => `[e${i + 1}] link "옛항목${i} ${"x".repeat(60)}"`,
+  );
+  // Long enough that the document-order pass's leftovers cannot fit one by
+  // accident: the negative control below must show them really being dropped.
+  const menuLines = [
+    `  [e100] menuitem "새 문서 ${"─".repeat(35)}"`,
+    `  [e101] menuitem "인쇄... ${"─".repeat(35)}"`,
+  ];
+  const atoms = [...oldLines, ...menuLines];
+
+  it("keeps elements minted DURING the action ahead of the document-order bulk", () => {
+    const out = capSnapshot(atoms.join("\n"), 500, { newUidFloor: 99 });
+    expect(out).toContain('[e100] menuitem "새 문서');
+    expect(out).toContain('[e101] menuitem "인쇄...');
+    expect(out).toContain("appeared during this action");
+  });
+
+  it("without the floor, document order spends the budget before reaching them", () => {
+    const out = capSnapshot(atoms.join("\n"), 500);
+    expect(out).not.toContain("[e100]");
+    expect(out).not.toContain("appeared during this action");
+  });
+
+  it("bounds the new-uid pass so a wholesale re-render cannot starve old uids", () => {
+    // Every line "new": the pass may spend only a quarter of the budget, so
+    // most of the budget still goes to the ordinary uid pass in document order.
+    const out = capSnapshot(atoms.join("\n"), 500, { newUidFloor: 0 });
+    expect(out).toContain("[e1]");
+  });
+});
+
+describe("renderAxText editor-value echo (round 15 — TinyMCE read twice)", () => {
+  const editorNodes = () => [
+    node("root", "RootWebArea", "문서", ["ed"]),
+    node("ed", "generic", "Rich Text Area. Press ALT-0 for help.", ["p1", "p2"], {
+      ...editableRoot(),
+      value: { value: "첫 번째 문단입니다. 두 번째 문단입니다." },
+    }),
+    node("p1", "paragraph", "", ["t1"]),
+    node("t1", "StaticText", "첫 번째 문단입니다."),
+    node("p2", "paragraph", "", ["t2"]),
+    node("t2", "StaticText", "두 번째 문단입니다."),
+  ];
+
+  it("prints an editor's content ONCE — the value line answers for its children", () => {
+    const lines = renderAxText(editorNodes()) as string[];
+    const hits = lines.filter((line) => line.includes("첫 번째 문단입니다."));
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toContain("Rich Text Area");
+  });
+
+  it("keeps child text the editor's value does NOT contain (a truncated value)", () => {
+    const nodes = editorNodes();
+    nodes.push(node("p3", "paragraph", "", ["t3"]), node("t3", "StaticText", "값이 못 담은 꼬리 문단"));
+    (nodes[1].childIds as string[]).push("p3");
+    const lines = renderAxText(nodes) as string[];
+    expect(lines.join("\n")).toContain("값이 못 담은 꼬리 문단");
+  });
+
+  it("does not treat an option matching its combobox's value as an echo", () => {
+    const lines = renderAxText([
+      node("root", "RootWebArea", "폼", ["combo"]),
+      node("combo", "combobox", "버전", ["o1", "o2"], {
+        value: { value: "8" },
+        properties: [{ name: "expanded", value: { value: true } }],
+      }),
+      node("o1", "option", "8"),
+      node("o2", "option", "8-dev"),
+    ]) as string[];
+    expect(lines.join("\n")).toContain("버전: 8");
+    expect(lines.filter((line) => line === "8")).toHaveLength(1);
+  });
+});

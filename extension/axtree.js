@@ -2093,6 +2093,30 @@ export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
    * (round 13). ALL of them fold here, into one counted line per combobox.
    */
   const optionCaps = new Map();
+  /**
+   * Editor nodes that printed their VALUE -> that value, space-stripped. A rich
+   * editor's AX value IS its rendered text (Chrome computes one from the other),
+   * so every StaticText under it re-spells what the editor's own line already
+   * said — TinyMCE's iframe body read back its whole document TWICE (round 15),
+   * because each paragraph opened its own one-segment run and the run-echo rule
+   * only compares a run against the single line beside it. Restricted to
+   * editable roots and textbox-shaped nodes on purpose: a combobox's value
+   * coinciding with one of its option labels is a real list entry, not an echo.
+   */
+  const editorValueOf = new Map();
+  /** Emitting ancestors climbed when looking for that value (bounded, not deep). */
+  const EDITOR_ECHO_CLIMB_MAX = 12;
+  const editorAlreadySays = (container, printed) => {
+    const stripped = stripSpaces(printed);
+    if (!stripped) return false;
+    let up = container;
+    for (let hops = 0; up && hops < EDITOR_ECHO_CLIMB_MAX; hops += 1) {
+      const owned = editorValueOf.get(up);
+      if (owned !== undefined) return owned.includes(stripped);
+      up = parentOf.get(up);
+    }
+    return false;
+  };
   /** Same mid-word-highlight suppression renderAxTree does — see closeRun there. */
   const closeTextRun = (incoming) => {
     if (run && run.segments.length > 1) {
@@ -2127,6 +2151,14 @@ export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
       }
     }
     const printed = name && value ? `${name}: ${value}` : name || value;
+    // Text an enclosing editor's value line has ALREADY answered is an echo,
+    // not content — see editorValueOf above. Value-carrying nodes are exempt
+    // (a nested field is its own control), and the check runs before any run
+    // or row state so a suppressed echo leaves both untouched.
+    if (!value && editorAlreadySays(container, printed)) return;
+    if (value && (isEditableRoot(node) || role === "textbox" || role === "searchbox")) {
+      editorValueOf.set(node, stripSpaces(value));
+    }
     // The whitespace this node's own text carries at each end, read before the
     // trim the emit did: at every seam below it is the difference between the
     // page's spacing and a guess made from the characters (see nameEdges).
@@ -2336,6 +2368,31 @@ export function capSnapshot(textOrLines, maxChars = SNAPSHOT_MAX_CHARS, opts) {
     focusUsed = focusUid;
     break;
   }
+  // Elements MINTED during this very action, ahead of the document-order uid
+  // pass: a menu trigger's popup renders in an aux container far from the
+  // trigger in the tree, so the focus pass (a NEIGHBOUR walk) never reaches
+  // it and the document-order pass spent the budget on the toolbar instead —
+  // TinyMCE's File menu opened to a snapshot showing every menubar sibling
+  // and none of the menu's own items (round 15). `opts.newUidFloor` is the
+  // uid counter as it stood BEFORE the action ran; anything above it appeared
+  // because of the action, which is usually exactly what the agent opened the
+  // menu to see. Bounded to a quarter of the budget so a page that re-rendered
+  // wholesale cannot starve the rest of its uids.
+  let newKept = false;
+  const floor = Number.isFinite(opts?.newUidFloor) ? Number(opts.newUidFloor) : null;
+  if (floor !== null) {
+    let budget = Math.floor(maxChars / 4);
+    for (let i = 0; i < atoms.length; i += 1) {
+      if (keep[i] !== null) continue;
+      const minted = LEADING_UID.exec(atoms[i])?.[1];
+      if (!minted || Number(minted.slice(1)) <= floor) continue;
+      const cost = atoms[i].length + 1;
+      if (cost > budget || cost > remaining) continue;
+      take(i, atoms[i]);
+      budget -= cost;
+      newKept = true;
+    }
+  }
   for (let i = 0; i < atoms.length; i += 1) {
     if (keep[i] === null && leadsWithUid(atoms[i]) && atoms[i].length + 1 <= remaining)
       take(i, atoms[i]);
@@ -2351,9 +2408,10 @@ export function capSnapshot(textOrLines, maxChars = SNAPSHOT_MAX_CHARS, opts) {
   }
   const kept = keep.filter((atom) => atom !== null);
   const dropped = atoms.length - kept.length;
+  const newFirst = newKept ? " Elements that appeared during this action were kept too." : "";
   const keptFirst = focusKept
-    ? `The element just acted on ([${focusUsed}]) and its surroundings were kept first, then other interactive [uid] elements.`
-    : "Interactive [uid] elements were kept first.";
+    ? `The element just acted on ([${focusUsed}]) and its surroundings were kept first, then other interactive [uid] elements.${newFirst}`
+    : `Interactive [uid] elements were kept first.${newFirst}`;
   return (
     `${kept.join("\n")}\n\n[snapshot truncated: ${dropped} of ${atoms.length} entries omitted to fit. ` +
     `${keptFirst} Read the page's full text with ` +
