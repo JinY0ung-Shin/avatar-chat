@@ -410,6 +410,8 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
         return false;
       }
       const tx = this.db.transaction(() => {
+        this.db.prepare("DELETE FROM avatar_tasks WHERE owner_user_id = ?").run(id);
+        this.db.prepare("DELETE FROM avatar_api_keys WHERE owner_user_id = ?").run(id);
         // Delete conversations owned by or targeting this user (+ their messages).
         const convRows = this.db
           .prepare(

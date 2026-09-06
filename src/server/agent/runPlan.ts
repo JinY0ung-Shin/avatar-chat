@@ -818,6 +818,14 @@ export async function buildAgentRunPlan(
     deckRenderingAvailable,
     visionEnabled: runVisionEnabled,
     toolSkillPolicy,
+    // Turn PROVENANCE (META-COGNITION), mirroring buildSystemPromptAppend's
+    // external-task paragraph: an outside system submitted this instruction,
+    // so describe_system must not report it as an owner typing in the chat.
+    externalTaskApi: request.externalTaskApi,
+    // Unattended (routine) runs: the prompt routes them to its own headless
+    // branch, so describe_system has to omit the same owner-conversation facts
+    // or the two surfaces contradict each other on the same run.
+    headless: request.headless,
   });
   // Cross-avatar discovery (read-only): lets the avatar look up OTHER visible
   // avatars by capability so it can point the user at a teammate avatar for
@@ -980,6 +988,11 @@ export async function buildAgentRunPlan(
     // Owner-scheduled routines are excluded on purpose: creating a chat contact
     // is a decision the owner makes in conversation, not unattended work.
     !request.headless &&
+    // Same reasoning for a turn an EXTERNAL SYSTEM submitted through the task
+    // API: the owner did not type it, so an outside instruction must never
+    // stand up a new bot unattended. Not headless (questions still park), so it
+    // needs its own exclusion here.
+    !request.externalTaskApi &&
     // The phase-1 feature gate (the same fact ownerState.personalAgentsEnabled
     // reports to both metacognition surfaces).
     ownerState.personalAgentsEnabled;

@@ -2133,6 +2133,85 @@ describe("system tools (avatar system management)", () => {
     expect(res.content[0].text).toContain("Remote SSH tools: enabled");
   });
 
+  it("describe_system names the turn's origin, and drops bot tools on a task-API run", async () => {
+    const s = setup("st-origin");
+    const interactive = await callTool(toolsFor(s), "describe_system", {});
+    expect(interactive.content[0].text).toContain(
+      "This turn's origin: interactive chat",
+    );
+    // Control for the negatives below: this owner IS an admin, so the bot
+    // roster really does render its create/hand-off triggers here.
+    expect(interactive.content[0].text).toContain(
+      "You can create another with mcp__personal_agent__create_agent",
+    );
+    expect(interactive.content[0].text).toContain(
+      "Hand-off to a bot (mcp__personal_agent__delegate_to_bot): ",
+    );
+
+    const externalTools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      viewerIsOwner: true,
+      externalTaskApi: true,
+    });
+    const external = (await callTool(externalTools, "describe_system", {}))
+      .content[0].text ?? "";
+    expect(external).toContain(
+      "This turn's origin: submitted by an EXTERNAL SYSTEM",
+    );
+    expect(external).toContain("POST /api/v1/avatar/tasks");
+    // The two metacognition surfaces must agree with the run plan: bot
+    // creation/hand-off is not registered for a turn nobody typed, so the
+    // roster must not offer either tool as available.
+    expect(external).not.toContain(
+      "You can create another with mcp__personal_agent__create_agent",
+    );
+    expect(external).not.toContain(
+      "Hand-off to a bot (mcp__personal_agent__delegate_to_bot): available",
+    );
+    expect(external).toContain("an external system submitted this turn");
+    // Mirrors the prompt's browser caveat: the bridge gate reports CONNECTED
+    // whether or not a client is actually attached to an API-submitted turn.
+    expect(external).toContain(
+      "this conversation open in Noah with the extension running",
+    );
+    expect(interactive.content[0].text).not.toContain(
+      "this conversation open in Noah with the extension running",
+    );
+  });
+
+  it("describe_system matches the prompt's headless branch on an unattended routine", async () => {
+    const s = setup("st-headless");
+    const routine = (await callTool(
+      buildSystemTools(s.store, {
+        ...s.baseCtx,
+        viewerIsOwner: true,
+        headless: true,
+      }),
+      "describe_system",
+      {},
+    )).content[0].text ?? "";
+
+    expect(routine).toContain("This turn's origin: an UNATTENDED run");
+    expect(routine).not.toContain("This turn's origin: interactive chat");
+    // buildSystemPromptAppend emits the task-API self-state ONLY from its owner
+    // branch, which a headless run never reaches — so this surface must skip it
+    // too, or the two disagree about the same run.
+    expect(routine).not.toContain("External task API:");
+    // ...and the bot tools runPlan withholds from an unattended run must not be
+    // advertised as available here either.
+    expect(routine).not.toContain(
+      "You can create another with mcp__personal_agent__create_agent",
+    );
+    expect(routine).toContain(
+      "this is an unattended run with no owner in the conversation",
+    );
+
+    // Control: the interactive run keeps both.
+    const interactive = (await callTool(toolsFor(s), "describe_system", {}))
+      .content[0].text ?? "";
+    expect(interactive).toContain("External task API:");
+  });
+
   it("describe_system reports text-only model vision honestly", async () => {
     const s = setup("st-vision");
     const on = await callTool(toolsFor(s), "describe_system", {});

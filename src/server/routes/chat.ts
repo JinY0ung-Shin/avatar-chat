@@ -644,6 +644,14 @@ export interface ChatTurnDeps {
  * `undefined` for every optional selection, which the derivations below already
  * read as "use whatever is stored on the conversation".
  */
+/**
+ * Visible-reply text of a turn that hands work to background tasks/subagents
+ * before it streamed anything itself (the early `done{background:true}` frame).
+ * Exported so the task-API runner can keep it OUT of a stored task result — the
+ * real answer arrives later as `bg_message` reports.
+ */
+export const BACKGROUND_TURN_PLACEHOLDER = "백그라운드 작업을 진행 중입니다.";
+
 export interface ChatTurnContext {
   ownerUserId: string;
   ownerDisplayName: string;
@@ -690,9 +698,19 @@ export interface ChatTurnContext {
    * scheduler dedupe its own queued firings.
    */
   routineJobId?: string;
+  /**
+   * The `avatar_tasks` row this turn executes, when an EXTERNAL SYSTEM submitted
+   * the instruction through the owner's personal task API (`POST
+   * /api/v1/avatar/tasks`). Set only by `avatarTaskRunner`. PROVENANCE, not
+   * capability: the run stays a full owner run, but the SDK request is stamped
+   * `externalTaskApi` so the prompt, `describe_system`, and the interactive-only
+   * tool gates (bot creation) can tell that no owner typed this turn.
+   */
+  externalTaskId?: string;
 }
 
 export interface ChatTurnHooks {
+  onEvent?: (event: string, data: unknown) => void;
   /**
    * Called between `openRun` and the agent stream, exactly where the SSE
    * handshake sits. Return false to abandon the turn (the run is closed for
@@ -1146,6 +1164,7 @@ export async function executeChatTurn(
     openRun(runId, ownerUserId, {
       conversationId,
       avatarId: threadAvatarId,
+      onEvent: hooks.onEvent,
       abortController,
     });
     // openRun sits BEFORE the run's own try/finally { closeRun }, so guard the
@@ -1579,6 +1598,11 @@ export async function executeChatTurn(
           // model failure, exactly like a routine — there is no live viewer to
           // hand the "try another model" nudge to.
           ...(ctx.modelFallback ? { modelFallback: true } : {}),
+          // Provenance stamp from the task runner: an EXTERNAL SYSTEM submitted
+          // this instruction through the owner's task API. Capability is
+          // unchanged (still a full owner run) — the flag only reaches the
+          // prompt, describe_system, and the interactive-only tool gates.
+          ...(ctx.externalTaskId ? { externalTaskApi: true } : {}),
         },
         pluginRoots,
         config,
@@ -1685,7 +1709,7 @@ export async function executeChatTurn(
                 kind: "text",
                 runtime: config.agentRuntime,
                 summary: "Claude Agent SDK 실행이 완료되었습니다.",
-                text: segment.text || "백그라운드 작업을 진행 중입니다.",
+                text: segment.text || BACKGROUND_TURN_PLACEHOLDER,
                 ...(latestPlan ? { plan: latestPlan } : {}),
                 ...(streamedThinking ? { thinking: streamedThinking } : {}),
                 ...(segment.usage ? { usage: segment.usage } : {}),

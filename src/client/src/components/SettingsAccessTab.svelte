@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsAvatarApiKeys from "./SettingsAvatarApiKeys.svelte";
   import Icon from "./Icon.svelte";
   import BrowserBridgeGuideModal from "./BrowserBridgeGuideModal.svelte";
   import RevealableInput from "./RevealableInput.svelte";
@@ -750,6 +751,8 @@
     void copyText(user?.sshPublicKey || "", btn);
   }
 </script>
+
+<SettingsAvatarApiKeys active={active && Boolean(user)} />
 
 {#if active && user}
   <section class="settings-card">

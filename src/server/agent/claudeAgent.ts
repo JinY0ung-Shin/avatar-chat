@@ -347,6 +347,7 @@ export async function runClaudeAgent(
     // Bot-creation self-state, rides ONLY runs that registered create_agent
     // (the skillExchangeActive precedent) so the standing guidance and the tool
     // can't diverge. The roster is the owner's ENABLED bots.
+    avatarApiKeyCount: request.viewerIsOwner && !request.groupAgent ? ownerState.avatarApiKeyCount : undefined,
     personalAgentsEnabled: personalAgentCreateActive,
     personalAgentNames: personalAgentCreateActive
       ? ownerState.personalAgentNames

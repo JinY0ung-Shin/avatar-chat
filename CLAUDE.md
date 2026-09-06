@@ -85,6 +85,22 @@ These are the invariants the project is built around. New work should reinforce 
   update heals them. The
   `mcp__skill_exchange__*` tools are owner-only end
   to end. Mechanics → `docs/architecture/avatar-collab.md`.
+- **A personal API key IS the owner, and an API-submitted turn is MACHINE-authored.** The external
+  task API (`POST /api/v1/avatar/tasks`, Bearer `noah_…` key, SHA-256 hash stored, ≤10 per user,
+  issued under 권한·연결) runs the owner's MAIN avatar as a FULL owner run through `executeChatTurn` —
+  same tools, shell-exposed secrets, repo commits — and the key holder answers permission prompts via
+  `/respond`, so a leaked key is the owner's session. Keys are accepted ONLY under
+  `/api/v1/avatar/tasks`, never on session/admin routes, and session cookies are never accepted
+  there. The `message` was NOT typed by the owner (incident bodies, log excerpts), so the run is
+  provenance-stamped (`ChatTurnContext.externalTaskId` → `AgentRequest.externalTaskApi`): the prompt
+  tells the avatar to treat the body as that system's data, `describe_system` reports the origin, and
+  interactive-only gates (`create_agent`) exclude it exactly like `headless` — **when you add an
+  interactive-only capability, gate it on BOTH `headless` and `externalTaskApi`.** Tasks are a SQLite
+  queue (queued → running → succeeded/failed/cancelled; `waiting_input` is presentation-only) drained
+  by a 1 s dispatcher (per-owner 1, process-wide 4, waits behind an active run on the same
+  conversation, backs off on 409, records a graceful restart as `failed`), independent of routines;
+  the run's audit rows keep their own action names (only `chat` becomes `avatar_api_task`). Mechanics →
+  `docs/architecture/avatar-task-api.md`.
 - **git remote work is MCP-only BY DESIGN.** The agent shell has NO git credentials (stripped from the
   subprocess env), so Bash `git push`/`gh` can never authenticate. Route every git-ish capability through
   an in-process MCP bridge (`mcp__repo__*`/`mcp__git_repo__*`/`mcp__group_repo__*`) and keep the

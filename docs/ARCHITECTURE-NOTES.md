@@ -35,6 +35,7 @@ Companion to the server-area philosophy in [`../src/server/CLAUDE.md`](../src/se
 | [repo-knowledge.md](architecture/repo-knowledge.md) | Touching the knowledge repo or any git plumbing shared by the repo families: clone/status/commit internals, the arg-safety validator, and the backfill / `request_info` / second-brain capture mechanics. |
 | [secrets-ssh.md](architecture/secrets-ssh.md) | Handling anything credential-shaped: the encrypted vault, per-user git tokens and host routing, SSH identity and trust, sandboxed Python execution, and on-prem GitHub CA wiring. |
 | [routines.md](architecture/routines.md) | Working on scheduled runs: the scheduler tick, the job model, and how a routine run differs from an interactive chat turn. |
+| [avatar-task-api.md](architecture/avatar-task-api.md) | Touching 외부 작업 API (the personal Bearer-key task API an external system drives the owner's main avatar with): the `avatar_api_keys`/`avatar_tasks` schema, the Bearer-only auth boundary, the 1-second dispatcher and its concurrency/backoff/cancel windows, the `externalTaskApi` provenance stamp, and every prune and cascade. |
 | [stt.md](architecture/stt.md) | Touching the composer's mic button or `/api/stt`: the JSON-data-URL-in / multipart-out contract, the validator it mirrors from `chatImages.ts`, the limits that make a self-hosted unauthenticated GPU service safe to sit behind, why the client cannot use `blob:`, and the `STT_URL` engine seam. |
 
 ## Agent & MCP tools (`src/server/agent/`)
