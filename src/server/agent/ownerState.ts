@@ -38,6 +38,7 @@ import { MAX_PERSONAL_AGENTS } from "../store.js";
  * does not surface the model at all.
  */
 export interface OwnerState {
+  avatarApiKeyCount: number;
   /** Whether the owner has connected a personal knowledge repo (repo set). */
   knowledgeRepoConfigured: boolean;
   /** Raw knowledge-repo connection (null when none); describe_system shows `@ branch`. */
@@ -106,6 +107,7 @@ export function summarizeOwnerState(
 ): OwnerState {
   const knowledgeRepo = store.getKnowledgeRepo(avatarUserId);
   return {
+    get avatarApiKeyCount() { return store.listAvatarApiKeys(avatarUserId).length; },
     knowledgeRepoConfigured: Boolean(knowledgeRepo.repo),
     knowledgeRepo: { repo: knowledgeRepo.repo, branch: knowledgeRepo.branch },
     gitTokenSet: Boolean(store.getGitToken(avatarUserId)),
@@ -193,6 +195,7 @@ export function gettingStartedGaps(
  */
 export function emptyOwnerState(store: Store, config: AppConfig): OwnerState {
   return {
+    avatarApiKeyCount: 0,
     knowledgeRepoConfigured: false,
     knowledgeRepo: { repo: null, branch: null },
     gitTokenSet: false,

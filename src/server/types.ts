@@ -1678,6 +1678,7 @@ export interface AgentRequest {
    * guidance can never offer a tool the run lacks. False on a bot run too, which
    * carries `update_profile` instead.
    */
+  avatarApiKeyCount?: number;
   personalAgentsEnabled?: boolean;
   /**
    * Display names of the owner's ENABLED bots only (a disabled bot is not

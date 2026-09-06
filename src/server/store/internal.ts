@@ -373,6 +373,20 @@ export class StoreBase {
 
   protected migrate(): void {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS avatar_api_keys (
+        id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, name TEXT NOT NULL,
+        prefix TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS avatar_api_keys_owner ON avatar_api_keys(owner_user_id);
+      CREATE TABLE IF NOT EXISTS avatar_tasks (
+        id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, api_key_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL,
+        run_id TEXT, result_json TEXT, error TEXT, idempotency_key TEXT, fingerprint TEXT NOT NULL,
+        user_message_persisted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(owner_user_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS avatar_tasks_queue ON avatar_tasks(status, created_at);
+      CREATE INDEX IF NOT EXISTS avatar_tasks_owner ON avatar_tasks(owner_user_id, created_at);
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         username TEXT UNIQUE NOT NULL,

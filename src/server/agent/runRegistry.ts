@@ -48,6 +48,7 @@ interface Client {
 }
 
 interface Run {
+  onEvent?: (event: string, data: unknown) => void;
   userId: string;
   conversationId?: string;
   avatarId?: string;
@@ -70,6 +71,7 @@ interface Run {
 }
 
 interface RunMeta {
+  onEvent?: (event: string, data: unknown) => void;
   conversationId?: string;
   avatarId?: string;
   abortController?: AbortController;
@@ -98,6 +100,7 @@ function conversationKey(userId: string, conversationId: string): string {
 export function openRun(runId: string, userId: string, meta: RunMeta = {}): void {
   runs.set(runId, {
     userId,
+    onEvent: meta.onEvent,
     conversationId: meta.conversationId,
     avatarId: meta.avatarId,
     abortController: meta.abortController,
@@ -113,6 +116,14 @@ export function openRun(runId: string, userId: string, meta: RunMeta = {}): void
   if (meta.conversationId) {
     conversationRuns.set(conversationKey(userId, meta.conversationId), runId);
   }
+  // Deadlines abort the controller without marking a user cancellation. They
+  // must also release parked hooks, otherwise a question outlives the deadline.
+  const releaseAbortedPrompts = () => {
+    const run = runs.get(runId);
+    if (run) resolvePending(runId, run, { notify: true });
+  };
+  meta.abortController?.signal.addEventListener("abort", releaseAbortedPrompts, { once: true });
+  if (meta.abortController?.signal.aborted) releaseAbortedPrompts();
   regLogger.debug({ runId, userId }, "run opened");
 }
 
@@ -177,6 +188,11 @@ export function emitRunEvent(
   const run = runs.get(runId);
   if (!run || run.ended) {
     return false;
+  }
+  // Internal task bookkeeping never receives non-replayable secret payloads.
+  if (options?.replay !== false && run.onEvent) {
+    try { run.onEvent(event, data); }
+    catch { regLogger.error({ runId, event }, "run event observer failed"); }
   }
   const frame = { id: ++run.nextEventId, event, data };
   if (options?.replay !== false) {
@@ -320,7 +336,7 @@ export function awaitResponse(
   ttlMs: number = PROMPT_TTL_MS,
 ): Promise<unknown> {
   const run = runs.get(runId);
-  if (!run || run.ended) {
+  if (!run || run.ended || run.abortController?.signal.aborted) {
     return Promise.resolve(CANCELLED);
   }
   return new Promise((resolve) => {
@@ -391,4 +407,15 @@ export function closeRun(runId: string): void {
   }
   runs.delete(runId);
   regLogger.debug({ runId, pendingCount }, "run closed");
+}
+
+/** Only outstanding human prompts, scoped exactly like the SSE attachment. */
+export function getRunPrompts(runId: string, userId: string): { event: string; data: unknown }[] {
+  const run = runs.get(runId);
+  if (!run || run.ended || run.userId !== userId) return [];
+  return run.events.filter(frame => {
+    if (!["permission", "question", "plan_review", "canvas"].includes(frame.event)) return false;
+    const data = frame.data as { requestId?: string };
+    return typeof data?.requestId === "string" && run.pending.has(data.requestId);
+  }).map(({ event, data }) => ({ event, data }));
 }

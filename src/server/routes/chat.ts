@@ -693,6 +693,7 @@ export interface ChatTurnContext {
 }
 
 export interface ChatTurnHooks {
+  onEvent?: (event: string, data: unknown) => void;
   /**
    * Called between `openRun` and the agent stream, exactly where the SSE
    * handshake sits. Return false to abandon the turn (the run is closed for
@@ -1146,6 +1147,7 @@ export async function executeChatTurn(
     openRun(runId, ownerUserId, {
       conversationId,
       avatarId: threadAvatarId,
+      onEvent: hooks.onEvent,
       abortController,
     });
     // openRun sits BEFORE the run's own try/finally { closeRun }, so guard the

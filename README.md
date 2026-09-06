@@ -286,3 +286,7 @@ click **아바타가 자동 생성** under 역량 해시태그, add a plugin →
 panel and add a second account to it → from that account, open **탐색**, search by a
 hashtag, pick the teammate's avatar, and chat. Confirm the response streams and renders
 markdown.
+
+### 외부 아바타 작업 API
+
+외부 시스템에서 개인 API 키로 자신의 아바타에게 자유로운 지시를 보내고, 작업 상태·결과를 조회하거나 추가 질문에 응답할 수 있습니다. **내 아바타 → 권한·연결 → 외부 작업 API**에서 키를 발급하세요. 호출 예제와 실행 정책은 [외부 아바타 작업 API 문서](docs/avatar-task-api.md)를 참고하세요.

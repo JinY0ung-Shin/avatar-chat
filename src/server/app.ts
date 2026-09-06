@@ -16,6 +16,7 @@ import { createGroupsRouter } from "./routes/groups.js";
 import { createPersonalAgentsRouter } from "./routes/personalAgents.js";
 import { createBotTasksRouter } from "./routes/botTasks.js";
 import { maybeDispatchNextBotTask } from "./botTaskRunner.js";
+import { createAvatarTasksRouter } from "./routes/avatarTasks.js";
 import { createRoutinesRouter } from "./routes/routines.js";
 import { createSkillShareRouter } from "./routes/skillShare.js";
 import { createSttRouter } from "./routes/stt.js";
@@ -194,6 +195,7 @@ export function createApp(services = createServices()) {
   app.use(createPersonalAgentsRouter(deps));
   app.use(createBotTasksRouter(deps));
   app.use(createRoutinesRouter(deps));
+  app.use(createAvatarTasksRouter(deps));
   app.use(createSkillShareRouter(deps));
   app.use(createSttRouter(deps));
   app.use(createChatRouter(deps));

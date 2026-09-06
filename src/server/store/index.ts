@@ -10,6 +10,7 @@ import { withAdmin } from "./admin.js";
 import { withGroups } from "./groups.js";
 import { withGroupAgents } from "./groupAgents.js";
 import { withPersonalAgents } from "./personalAgents.js";
+import { withAvatarTasks } from "./avatarTasks.js";
 import { withBotTasks } from "./botTasks.js";
 
 // Re-export the non-Store public symbols identically to the pre-split module so
@@ -36,7 +37,7 @@ export { MAX_PERSONAL_AGENTS } from "./personalAgents.js";
  * disjoint, so nothing shadows anything); it only feeds TS `this`-typing, which
  * the `declare`d cross-domain method signatures on StoreBase already cover.
  */
-const ComposedStore = withBotTasks(
+const ComposedStore = withAvatarTasks(withBotTasks(
   withPersonalAgents(
     withGroupAgents(
       withGroups(
@@ -50,7 +51,7 @@ const ComposedStore = withBotTasks(
       ),
     ),
   ),
-);
+));
 
 export class Store extends ComposedStore {
   constructor(config: AppConfig) {

@@ -1336,6 +1336,9 @@ export function buildSystemPromptAppend(
     }
     // Personal bots: the create trigger, on the owner's OWN avatar only (the
     // stamped flag is false on a bot run, which has update_profile instead).
+    if (request.avatarApiKeyCount !== undefined) {
+      lines.push(`External task API: ${request.avatarApiKeyCount} active personal API keys. The owner can issue/revoke keys in 내 아바타 → 권한·연결 → 외부 작업 API. External systems send arbitrary instructions as JSON {message, conversationId?} to POST /api/v1/avatar/tasks with a Bearer key to run the owner's main avatar. Tasks are queued, results stay in the conversation, and questions/permissions can be answered in Noah or through the task respond API. This is independent of scheduled routines. Never ask the owner to paste an API key into chat.`);
+    }
     const personalBotsBlock = personalBotsSection(request);
     if (personalBotsBlock) {
       lines.push(personalBotsBlock);
