@@ -336,7 +336,16 @@ export function awaitResponse(
   ttlMs: number = PROMPT_TTL_MS,
 ): Promise<unknown> {
   const run = runs.get(runId);
-  if (!run || run.ended || run.abortController?.signal.aborted) {
+  if (!run || run.ended) {
+    return Promise.resolve(CANCELLED);
+  }
+  if (run.cancelled || run.abortController?.signal.aborted) {
+    // The deadline/cancel already released every parked prompt, and a prompt
+    // that arrives AFTER the abort (the SDK's last hook before teardown) must
+    // not park until closeRun — but its frame is already in the replay buffer,
+    // so resolve it VISIBLY: without this a viewer who is attached or replays
+    // the journal renders a modal no later frame dismisses.
+    emitRunEvent(runId, "prompt_resolved", { requestId });
     return Promise.resolve(CANCELLED);
   }
   return new Promise((resolve) => {

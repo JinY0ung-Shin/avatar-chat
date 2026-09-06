@@ -38,6 +38,7 @@ import { MAX_PERSONAL_AGENTS } from "../store.js";
  * does not surface the model at all.
  */
 export interface OwnerState {
+  /** Active personal keys for the external task API (POST /api/v1/avatar/tasks). */
   avatarApiKeyCount: number;
   /** Whether the owner has connected a personal knowledge repo (repo set). */
   knowledgeRepoConfigured: boolean;
@@ -107,7 +108,10 @@ export function summarizeOwnerState(
 ): OwnerState {
   const knowledgeRepo = store.getKnowledgeRepo(avatarUserId);
   return {
-    get avatarApiKeyCount() { return store.listAvatarApiKeys(avatarUserId).length; },
+    // Eager like every other field here: the key list is capped per owner, so
+    // one small read is cheaper than the getter it replaced (which re-queried on
+    // every access, and hid the read from `{...state}` spreads).
+    avatarApiKeyCount: store.listAvatarApiKeys(avatarUserId).length,
     knowledgeRepoConfigured: Boolean(knowledgeRepo.repo),
     knowledgeRepo: { repo: knowledgeRepo.repo, branch: knowledgeRepo.branch },
     gitTokenSet: Boolean(store.getGitToken(avatarUserId)),

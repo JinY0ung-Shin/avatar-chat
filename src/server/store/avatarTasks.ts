@@ -7,6 +7,18 @@ const KEY_COLUMNS = "id, name, prefix, created_at AS createdAt, last_used_at AS 
 const TASK_COLUMNS = `id, owner_user_id AS ownerUserId, api_key_id AS apiKeyId,
   conversation_id AS conversationId, message, status, run_id AS runId, result_json AS result,
   error, created_at AS createdAt, updated_at AS updatedAt, user_message_persisted AS userMessagePersisted`;
+/** What the dispatcher needs before it commits to a task (see queuedAvatarTasks). */
+export interface QueuedAvatarTask {
+  id: string;
+  ownerUserId: string;
+  conversationId: string;
+}
+
+/** Why a `running` row is reaped on boot. A graceful restart is a RESTART, not
+ *  an operator cancel, so the runner reuses this text for a shutdown-cancelled
+ *  run too — the API contract promises `failed` for both. */
+export const AVATAR_TASK_RESTART_ERROR = "서버가 재시작되어 실행이 중단되었습니다. 대화의 부분 결과를 확인한 뒤 다시 요청해 주세요.";
+
 function decode(row: AvatarTask | undefined): AvatarTask | null {
   return row ? { ...row, result: row.result ? JSON.parse(String(row.result)) : null,
     userMessagePersisted: Boolean(row.userMessagePersisted) } : null;
@@ -36,13 +48,30 @@ export function withAvatarTasks<TBase extends Constructor<StoreBase>>(Base: TBas
       const key = this.db.prepare(`SELECT k.id, k.owner_user_id AS ownerUserId FROM avatar_api_keys k
         JOIN users u ON u.id = k.owner_user_id WHERE k.token_hash = ? AND u.suspended = 0`).get(hashToken(token)) as { id: string; ownerUserId: string } | undefined;
       if (!key) return null;
-      this.db.prepare("UPDATE avatar_api_keys SET last_used_at = ? WHERE id = ?").run(now(), key.id);
+      // A caller polls task status on a loop, so refresh the stamp at most once a
+      // minute per key: an unthrottled write would turn every poll into a write
+      // transaction on the shared SQLite file.
+      this.db.prepare("UPDATE avatar_api_keys SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)")
+        .run(now(), key.id, new Date(Date.now() - 60_000).toISOString());
       return key;
     }
 
     avatarTaskKeyActive(ownerId: string, keyId: string): boolean {
       return this.count(`SELECT COUNT(*) AS c FROM avatar_api_keys k JOIN users u ON u.id = k.owner_user_id
         WHERE k.id = ? AND k.owner_user_id = ? AND u.suspended = 0`, keyId, ownerId) > 0;
+    }
+
+    /** Drop a thread this API auto-created for a task that ended before any chat
+     *  turn ran (cancel while queued, or a pre-run refusal) so a no-op request
+     *  leaves no empty conversation behind. Never call it once executeChatTurn
+     *  has been entered: the turn's prelude writes the instruction bubble. The
+     *  caller's own row is already terminal here, so the sibling check below sees
+     *  only OTHER tasks still counting on this thread. */
+    deleteConversationIfEmpty(ownerId: string, conversationId: string): boolean {
+      return this.db.prepare(`DELETE FROM conversations WHERE id = ? AND owner_user_id = ?
+        AND NOT EXISTS (SELECT 1 FROM messages WHERE conversation_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM avatar_tasks WHERE conversation_id = ? AND status IN ('queued', 'running'))`)
+        .run(conversationId, ownerId, conversationId, conversationId).changes > 0;
     }
 
     getAvatarTask(ownerId: string, id: string): AvatarTask | null {
@@ -75,8 +104,12 @@ export function withAvatarTasks<TBase extends Constructor<StoreBase>>(Base: TBas
       })();
     }
 
-    queuedAvatarTasks(): AvatarTask[] {
-      return (this.db.prepare(`SELECT ${TASK_COLUMNS} FROM avatar_tasks WHERE status = 'queued' ORDER BY created_at, rowid`).all() as AvatarTask[]).map(row => decode(row)!);
+    /** Dispatcher projection: just enough to order, skip and claim. The full row
+     *  (message included) is read back only for a task actually claimed, so a
+     *  deep queue never loads every instruction into memory each tick. */
+    queuedAvatarTasks(): QueuedAvatarTask[] {
+      return this.db.prepare(`SELECT id, owner_user_id AS ownerUserId, conversation_id AS conversationId
+        FROM avatar_tasks WHERE status = 'queued' ORDER BY created_at, rowid LIMIT 200`).all() as QueuedAvatarTask[];
     }
 
     claimAvatarTask(ownerId: string, id: string): boolean {
@@ -93,7 +126,7 @@ export function withAvatarTasks<TBase extends Constructor<StoreBase>>(Base: TBas
 
     recoverAvatarTasks(): void {
       this.db.prepare("UPDATE avatar_tasks SET status = 'failed', error = ?, updated_at = ? WHERE status = 'running'")
-        .run("서버가 재시작되어 실행이 중단되었습니다. 대화의 부분 결과를 확인한 뒤 다시 요청해 주세요.", now());
+        .run(AVATAR_TASK_RESTART_ERROR, now());
     }
   };
 }

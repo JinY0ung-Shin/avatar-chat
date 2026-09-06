@@ -25,6 +25,7 @@ export {
   MODEL_OVERRIDE_KEY,
 } from "./internal.js";
 export { MAX_PERSONAL_AGENTS } from "./personalAgents.js";
+export { AVATAR_TASK_RESTART_ERROR } from "./avatarTasks.js";
 
 /**
  * The single Store facade. Each per-domain module is a `(Base) => class extends

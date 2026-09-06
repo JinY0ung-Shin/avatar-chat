@@ -1442,6 +1442,16 @@ export interface AgentRequest {
    */
   headless?: boolean;
   /**
+   * True when this turn was submitted by an EXTERNAL SYSTEM through the owner's
+   * personal task API (`ChatTurnContext.externalTaskId`), not typed by the
+   * owner. Provenance for the prompt/describe_system and for the
+   * interactive-only gates (`create_agent` is registered only for turns a person
+   * is having with their own avatar): the run itself keeps the owner's full
+   * capability, and questions/permission prompts still park for an answer
+   * through the task API or the Noah UI.
+   */
+  externalTaskApi?: boolean;
+  /**
    * Auto-approve tool use: skip the interactive permission prompt and run
    * non-read-only tools without asking. Honored on the elevated, non-headless
    * path (`elevated && !headless`) for owner AND trusted users alike — the tool

@@ -852,6 +852,9 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
         // Delegated bot tasks are per-thread bookkeeping (내 봇 threads only) —
         // manual cascade, since bot_tasks has no FK onto conversations.
         this.db.prepare("DELETE FROM bot_tasks WHERE conversation_id = ?").run(id);
+        // Same story for personal task-API rows (avatar_tasks): no FK onto
+        // conversations, so the thread's tasks would outlive it.
+        this.db.prepare("DELETE FROM avatar_tasks WHERE conversation_id = ?").run(id);
         this.db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
       });
       tx();
@@ -869,11 +872,13 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       const tx = this.db.transaction((conversationIds: string[]) => {
         const deleteMessages = this.db.prepare("DELETE FROM messages WHERE conversation_id = ?");
         const deleteTasks = this.db.prepare("DELETE FROM bot_tasks WHERE conversation_id = ?");
+        const deleteAvatarTasks = this.db.prepare("DELETE FROM avatar_tasks WHERE conversation_id = ?");
         const deleteConversation = this.db.prepare("DELETE FROM conversations WHERE id = ? AND owner_user_id = ? AND is_routine = 0");
         for (const conversationId of conversationIds) {
           this.deleteCanvasArtifactsForConversation(conversationId);
           deleteMessages.run(conversationId);
           deleteTasks.run(conversationId);
+          deleteAvatarTasks.run(conversationId);
           deleteConversation.run(conversationId, ownerId);
         }
       });

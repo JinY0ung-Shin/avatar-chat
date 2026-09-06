@@ -1,8 +1,13 @@
 import { Router } from "express";
 import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import { cancelRun, getRunPrompts, submitResponse } from "../agent/runRegistry.js";
-import type { AvatarTask } from "../../shared/avatarTasks.js";
-import { apiError, type RouterDeps } from "./_shared.js";
+import type { AvatarTask, AvatarTaskPresentedStatus } from "../../shared/avatarTasks.js";
+import { apiError, isSafePathId, type RouterDeps } from "./_shared.js";
+
+/** The public task shape: the owner-side bookkeeping columns are stripped, and
+ *  `status` may report the derived `waiting_input`. */
+type PresentedAvatarTask = Omit<AvatarTask, "apiKeyId" | "ownerUserId" | "userMessagePersisted" | "status">
+  & { status: AvatarTaskPresentedStatus; pendingRequests: ReturnType<typeof getRunPrompts> };
 
 export function createAvatarTasksRouter({ store, auditAs }: RouterDeps): Router {
   const router = Router();
@@ -41,7 +46,7 @@ export function createAvatarTasksRouter({ store, auditAs }: RouterDeps): Router 
     res.locals.avatarApiKey = key;
     next();
   });
-  function present(task: AvatarTask) {
+  function present(task: AvatarTask): PresentedAvatarTask {
     const pendingRequests = task.runId ? getRunPrompts(task.runId, task.ownerUserId) : [];
     const { apiKeyId: _key, userMessagePersisted: _persisted, ownerUserId: _owner, ...publicTask } = task;
     return { ...publicTask, status: pendingRequests.length ? "waiting_input" : task.status, pendingRequests };
@@ -51,10 +56,12 @@ export function createAvatarTasksRouter({ store, auditAs }: RouterDeps): Router 
     const body = req.body;
     if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(k => !["message", "conversationId"].includes(k)) ||
       typeof body.message !== "string" || !body.message.trim() || Buffer.byteLength(body.message, "utf8") > 64 * 1024 ||
-      (body.conversationId !== undefined && (typeof body.conversationId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.conversationId)))) {
+      (body.conversationId !== undefined && (typeof body.conversationId !== "string" || !isSafePathId(body.conversationId)))) {
       apiError(res, 400, "message(최대 64KB)와 선택 사항인 conversationId만 전달해 주세요."); return;
     }
-    const idempotencyKey = req.get("Idempotency-Key") ?? null;
+    // `||`, not `??`: an empty header value is "" — the header being absent and
+    // the header being blank are the same "no key", not a 400.
+    const idempotencyKey = req.get("Idempotency-Key") || null;
     if (idempotencyKey !== null && !/^[\x21-\x7e]{1,128}$/.test(idempotencyKey)) {
       apiError(res, 400, "Idempotency-Key는 1~128자의 공백 없는 ASCII 문자열이어야 합니다."); return;
     }
@@ -85,7 +92,7 @@ export function createAvatarTasksRouter({ store, auditAs }: RouterDeps): Router 
   external.post("/:id/respond", (req, res) => {
     const task = res.locals.avatarTask as AvatarTask;
     const { requestId, value } = req.body ?? {};
-    if (typeof requestId !== "string" || !value || typeof value !== "object" || Array.isArray(value) || JSON.stringify(value).length > 65536) {
+    if (typeof requestId !== "string" || !value || typeof value !== "object" || Array.isArray(value) || Buffer.byteLength(JSON.stringify(value), "utf8") > 64 * 1024) {
       apiError(res, 400, "requestId와 객체 형식의 value가 필요합니다."); return;
     }
     const prompt = task.runId ? getRunPrompts(task.runId, task.ownerUserId).find(p => (p.data as { requestId: string }).requestId === requestId) : null;
@@ -96,8 +103,16 @@ export function createAvatarTasksRouter({ store, auditAs }: RouterDeps): Router 
   });
   external.post("/:id/cancel", (_req, res) => {
     const task = res.locals.avatarTask as AvatarTask;
-    if (task.status === "queued") store.updateAvatarTask(task.ownerUserId, task.id, "cancelled");
-    else if (!task.runId || !cancelRun(task.runId, task.ownerUserId)) {
+    // `running` with no runId is the CLAIMED window: the dispatcher flipped the
+    // status but the run has not opened yet, so there is nothing to cancelRun.
+    // Write the terminal status and let the runner's onRunOpen re-read it and
+    // abandon the turn.
+    if (task.status === "queued" || (task.status === "running" && !task.runId)) {
+      store.updateAvatarTask(task.ownerUserId, task.id, "cancelled");
+      // Only the queued branch prunes: a claimed task is already inside the
+      // turn's prelude, which touches (and writes to) this conversation.
+      if (task.status === "queued") store.deleteConversationIfEmpty(task.ownerUserId, task.conversationId);
+    } else if (!task.runId || !cancelRun(task.runId, task.ownerUserId)) {
       apiError(res, 409, "현재 취소할 수 없는 작업입니다."); return;
     }
     res.json({ ok: true });

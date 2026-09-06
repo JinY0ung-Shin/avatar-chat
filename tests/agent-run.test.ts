@@ -448,6 +448,58 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     ]);
   });
 
+  it("withholds bot creation/hand-off from a turn the external task API submitted", async () => {
+    const { config, store, baseRequest } = setup();
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    // Control: the same owner run, typed in the chat, registers both tools.
+    await runAgentStream(baseRequest, [], config, store, makeEvents());
+    const interactive = sdkMock.calls[0].options;
+    expect(interactive.allowedTools as string[]).toContain(
+      "mcp__personal_agent__create_agent",
+    );
+    expect(interactive.allowedTools as string[]).toContain(
+      "mcp__personal_agent__delegate_to_bot",
+    );
+
+    // An external system's instruction is still a FULL owner run, but standing
+    // up (or handing work to) a bot is a decision the owner makes in
+    // conversation — the same exclusion an unattended routine already gets.
+    await runAgentStream(
+      { ...baseRequest, externalTaskApi: true },
+      [],
+      config,
+      store,
+      makeEvents(),
+    );
+    const external = sdkMock.calls[1].options;
+    expect(external.allowedTools as string[]).not.toContain(
+      "mcp__personal_agent__create_agent",
+    );
+    expect(external.allowedTools as string[]).not.toContain(
+      "mcp__personal_agent__delegate_to_bot",
+    );
+    const externalServers = Object.keys(
+      external.mcpServers as Record<string, unknown>,
+    );
+    expect(externalServers).not.toContain("personal_agent");
+    // Owner capability is otherwise untouched — this is not a downgrade.
+    expect(externalServers).toContain("system");
+    expect(externalServers).toContain("repo");
+
+    // Both metacognition halves follow the tool: the prompt states the
+    // provenance and drops the create trigger it can no longer act on.
+    const externalPrompt = JSON.stringify(external.systemPrompt);
+    expect(externalPrompt).toContain("EXTERNAL SYSTEM");
+    expect(externalPrompt).not.toContain("mcp__personal_agent__create_agent");
+    expect(JSON.stringify(interactive.systemPrompt)).toContain(
+      "mcp__personal_agent__create_agent",
+    );
+    expect(JSON.stringify(interactive.systemPrompt)).not.toContain(
+      "EXTERNAL SYSTEM",
+    );
+  });
+
   it("registers the brain + canvas servers when a repo is connected and canvas is enabled", async () => {
     const { config, store, baseRequest, owner } = setup();
     store.setKnowledgeRepo(owner.id, "owner/kb", "main");

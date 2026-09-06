@@ -13,7 +13,9 @@
   let token = "";
   let newKeyId = "";
   $: if (active && !loaded && !busy) void load();
-  $: if (!active) token = "";
+  // Leaving the tab drops both the one-time secret and the cached list, so a
+  // re-entry (or a different account after a re-login) always refetches.
+  $: if (!active) { token = ""; loaded = false; }
 
   async function load() {
     busy = true;
@@ -45,17 +47,25 @@
     } catch (err) { error = (err as Error).message; }
     finally { busy = false; }
   }
-  async function copyToken() {
-    try { await copyText(token); notify("API 키를 복사했습니다.", "ok"); }
-    catch { error = "복사하지 못했습니다. API 키를 직접 선택해 복사해 주세요."; }
+  // copyText never throws: it reports the outcome by flashing the button it is
+  // given, and stays SILENT without one. So pass the button — otherwise a failed
+  // write (non-secure context, denied permission) would look exactly like a
+  // success and the owner could close the one-time reveal with nothing copied.
+  function copyToken(event: MouseEvent): void {
+    void copyText(token, event.currentTarget as HTMLButtonElement);
   }
 </script>
 
 {#if active}
   <section class="settings-card">
     <div class="panel-section-head">
-      <strong>외부 작업 API</strong>
-      <p class="muted">외부 시스템에서 내 아바타에게 자유롭게 지시할 수 있습니다. 이 키로 내 아바타의 도구를 사용하고 작업 결과를 조회할 수 있습니다.</p>
+      <div>
+        <h3>외부 작업 API</h3>
+        <p class="muted">
+          외부 시스템에서 내 아바타에게 자유롭게 지시할 수 있습니다. 이 키로 내 아바타의 도구를 사용하고 작업 결과를 조회할 수 있습니다.
+          이 키는 <strong>로그인한 나와 똑같은 권한</strong>으로 동작해 내 채팅의 모든 도구, 셸에 노출된 비밀값, 저장소 커밋까지 쓸 수 있으니 비밀번호처럼 보관하세요.
+        </p>
+      </div>
     </div>
     <form class="settings-form" on:submit|preventDefault={create}>
       <label class="field"><span>API 키 이름</span><input bind:value={name} maxlength="80" placeholder="예: 장애 모니터링" required disabled={busy} /></label>
@@ -66,6 +76,7 @@
         <label class="field"><span>발급된 키 — 지금 한 번만 표시됩니다</span><input readonly value={token} aria-label="발급된 API 키" autocomplete="off" spellcheck="false" /></label>
         <button type="button" class="btn" on:click={copyToken}>키 복사</button>
         <button type="button" class="linkish" on:click={() => token = ""}>닫기</button>
+        <p class="muted">복사가 되지 않으면 위 입력란의 키를 직접 선택해 복사하세요.</p>
       </div>
     {/if}
     {#if error}<div class="warn-box" role="alert">{error} <button class="linkish" type="button" disabled={busy} on:click={load}>목록 다시 불러오기</button></div>{/if}

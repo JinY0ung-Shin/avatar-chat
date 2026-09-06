@@ -387,6 +387,7 @@ export class StoreBase {
       );
       CREATE INDEX IF NOT EXISTS avatar_tasks_queue ON avatar_tasks(status, created_at);
       CREATE INDEX IF NOT EXISTS avatar_tasks_owner ON avatar_tasks(owner_user_id, created_at);
+      CREATE INDEX IF NOT EXISTS avatar_tasks_owner_status ON avatar_tasks(owner_user_id, status);
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         username TEXT UNIQUE NOT NULL,
