@@ -1,0 +1,59 @@
+# Use together with docker-compose.yml. Build the normal image as
+# noah-almighty:egress-base first. See docs/egress-policy.md.
+services:
+  noah-almighty:
+    build:
+      dockerfile: docker/egress/app.Dockerfile
+      args:
+        NOAH_BASE_IMAGE: ${NOAH_BASE_IMAGE:-noah-almighty:egress-base}
+    image: noah-almighty:egress
+    # Bootstrap installs namespace-local rules, then irreversibly drops every
+    # capability and uid before starting Node. No privileged container / socket.
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, SETUID, SETGID, SETPCAP]
+    security_opt: [no-new-privileges:true]
+    environment:
+      NOAH_EGRESS_PROXY_IP: ${NOAH_EGRESS_PROXY_IP:-172.30.247.2}
+    depends_on:
+      - egress-proxy
+
+  egress-proxy:
+    build:
+      context: .
+      dockerfile: docker/egress/proxy.Dockerfile
+      args:
+        APT_MIRROR_HOST: ${APT_MIRROR_HOST:-}
+        CA_CERT_FILE: ${CA_CERT_FILE:-docker/extra-ca.crt.example}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: noah-almighty-egress-proxy:local
+    restart: unless-stopped
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+      - /var/spool/squid
+    volumes:
+      - ${NOAH_EGRESS_POLICY_DIR:-./docker/egress/policy}:/etc/noah-egress:ro
+      - noah-egress-policy:/var/lib/noah-egress
+    environment:
+      # Must reach Noah directly to verify each caller's LIVE admin session.
+      # For native TLS, set a trusted HTTPS URL matching Noah's certificate.
+      NOAH_EGRESS_AUTH_URL: ${NOAH_EGRESS_AUTH_URL:-http://noah-almighty:${PORT:-48787}/api/admin/egress/authorize}
+    networks:
+      default:
+        ipv4_address: ${NOAH_EGRESS_PROXY_IP:-172.30.247.2}
+    # No published port: this proxy is only for the application network.
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${NOAH_EGRESS_SUBNET:-172.30.247.0/24}
+
+volumes:
+  noah-egress-policy:

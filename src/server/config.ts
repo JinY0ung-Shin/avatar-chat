@@ -66,6 +66,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
     // `|| 48787` guards a typo'd PORT (NaN would ERR_SOCKET_BAD_PORT at boot).
     port: Number(env("PORT", "48787")) || 48787,
+    egressControlUrl: env("NOAH_EGRESS_CONTROL_URL") || undefined,
     tlsCertFile: env("TLS_CERT_FILE") || undefined,
     tlsKeyFile: env("TLS_KEY_FILE") || undefined,
     dataDir,

@@ -907,6 +907,12 @@ describe("web fetch tools", () => {
     expect(webFetchProxyState({})).toEqual({ httpProxy: null, httpsProxy: null, noProxy: null });
   });
 
+  it("only reports domain policy when explicitly marked by the deployment bootstrap", () => {
+    expect(webFetchProxyState({ NOAH_EGRESS_POLICY: "domain-proxy" }).egressPolicy).toBe("domain-proxy");
+    expect(webFetchProxyState({ NOAH_EGRESS_POLICY: "true" }).egressPolicy).toBeUndefined();
+    expect(webFetchProxyState({ HTTPS_PROXY: "http://proxy:3128" }).egressPolicy).toBeUndefined();
+  });
+
   it("extractHtmlText keeps entity-encoded markup as inert text", () => {
     const { title, text } = extractHtmlText(
       "<html><head><title>T</title></head><body><p>&lt;script&gt;alert(1)&lt;/script&gt;</p></body></html>",
@@ -3064,6 +3070,24 @@ describe("system tools (avatar system management)", () => {
       expect(body).toContain("external URLs go through the corporate proxy");
       expect(body).toContain("NO_PROXY: .corp,localhost");
       expect(body).not.toContain("s3cr3t");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("reports shared egress scope even when the web tool group is off", async () => {
+    const s = setup("st-egress");
+    vi.stubEnv("NOAH_EGRESS_POLICY", "domain-proxy");
+    try {
+      const tools = buildSystemTools(s.store, {
+        ...s.baseCtx,
+        viewerIsOwner: true,
+        enabledMcpToolGroups: [],
+      });
+      const body = (await callTool(tools, "describe_system", {})).content[0].text ?? "";
+      expect(body).toContain("shared domain-proxy policy for all local avatars");
+      expect(body).toContain("User-PC browser traffic is outside this boundary");
+      expect(body).toContain("not independently audited");
     } finally {
       vi.unstubAllEnvs();
     }

@@ -100,6 +100,9 @@ export function webFetchProxyState(
     httpProxy: httpProxy ? redactProxyUrl(httpProxy) : null,
     httpsProxy: httpsProxy ? redactProxyUrl(httpsProxy) : null,
     noProxy: pick("NO_PROXY", "no_proxy"),
+    ...(env.NOAH_EGRESS_POLICY === "domain-proxy"
+      ? { egressPolicy: "domain-proxy" as const }
+      : {}),
   };
 }
 

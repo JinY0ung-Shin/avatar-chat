@@ -820,6 +820,11 @@ export function buildSystemPromptAppend(
   // Web fetch standing guidance (META-COGNITION): which proxy path external
   // URLs take is deployment state the avatar cannot infer, so state it. The
   // proxy snapshot is redacted to scheme://host:port (webFetchProxyState).
+  if (request.webFetchProxy?.egressPolicy === "domain-proxy") {
+    lines.push(
+      "Server egress: the deployment bootstrap reports a shared domain-blocking proxy policy for ALL local avatars and server tools, including Bash/curl/Python. Direct outbound connections and external DNS are blocked; only proxied HTTP(S) is available. The user's browser bridge is outside this network boundary. A proxy denial is an administrator policy, not a transient fetch error; report it instead of trying alternate IPs or tunnels. Read `mcp__system__read_manual` topic `network-policy` for scope and operator setup. This report does not independently audit the firewall or reveal the current blocklist.",
+    );
+  }
   if (mcpToolGroupEnabled(request, "web")) {
     const proxy = request.webFetchProxy;
     const proxyNote = !proxy

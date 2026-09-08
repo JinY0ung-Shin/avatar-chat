@@ -578,6 +578,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
                 : "interactive chat — a person is on the other side of this conversation"
           }`,
           `- runtime: ${ctx.config.agentRuntime}`,
+          ...(webProxy.egressPolicy === "domain-proxy"
+            ? ["- Server egress: bootstrap reports shared domain-proxy policy for all local avatars, server tools and shell commands; direct outbound connections and external DNS blocked. User-PC browser traffic is outside this boundary. Current blocklist/firewall are not independently audited here. Read manual topic network-policy; ask the deployment administrator about denials."]
+            : []),
           `- Model in use: ${modelLine}`,
           `- Reasoning effort: ${effortLine}`,
           `- MCP tool groups enabled for this conversation: ${enabledMcpToolGroupLabels.length ? enabledMcpToolGroupLabels.join(", ") : "(none)"}`,

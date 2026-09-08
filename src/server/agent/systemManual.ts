@@ -9,6 +9,24 @@
  */
 export const SYSTEM_MANUAL_TOPICS = [
   {
+    id: "network-policy",
+    title: "Shared server outbound network policy",
+    summary: "Domain blocking, proxy denials, browser scope and deployment setup.",
+    body: `## Scope
+An optional deployment overlay applies one outbound policy to ALL local avatars, personal bots, group agents, routines and server-side tools in the Noah container. It also affects model API, Git, Confluence and plugin traffic. describe_system reports the bootstrap's policy marker when present; it does not independently audit firewall rules or read the administrator's blocklist. The user's browser bridge executes on their PC and is outside this boundary. External gateways and remote hosts need their own policy for requests they originate.
+
+## Behavior
+The container bootstrap installs IPv4/IPv6 firewall rules before Noah starts, then drops root and all capabilities. Only loopback, replies to incoming connections and TCP to the dedicated HTTP proxy (3128) and its admin-session-protected policy controller (3129) are allowed. Destination DNS resolution happens at the proxy. Programs that ignore HTTP_PROXY/HTTPS_PROXY fail closed; raw SSH and other direct protocols are unavailable. HTTP requests and HTTPS CONNECT destination domains are checked against the same list. HTTPS paths are encrypted and are not filtered. IP-literal proxy destinations are denied.
+
+## Administrator setup
+The operator guide is docs/egress-policy.md in the deployment repository. Build the normal image as noah-almighty:egress-base, then use docker-compose.yml with docker-compose.egress.yml. Runtime images and the policy directory are administrator-controlled; do not mount the Docker/containerd socket or grant the application extra privileges.
+System administrators manage domains at 관리자 → 가입·접근 → 외부 통신 차단: add a domain, choose whether to include subdomains, remove entries, then 저장하고 적용. Saving validates the list and restarts Squid, closing old tunnels; in-flight server requests can fail. Concurrent edits return a conflict requiring a fresh read. Failed applies attempt to restore the previous policy; if the result is uncertain, reload the current state before claiming success. Changes appear in the admin audit log. Clearing all domains removes domain denials but keeps the direct-connection firewall. The panel explains when the controller is not installed or unavailable.
+The isolated controller rechecks the caller's live administrator browser session with Noah for every read/write. No controller machine key or writable policy volume is exposed to avatar processes. The host-only blocked-domains.txt seeds the first start; later changes live in the proxy's dedicated noah-egress-policy volume and survive restarts. upstream.conf remains operator-owned for a corporate parent proxy. The guide covers authentication callback URL/CA setup, persistence, verification and rollback. There is no avatar-facing policy editing tool; never seek admin session cookies to edit policy.
+
+## Handling denials
+Report the blocked destination and ask the deployment administrator to review the policy. Do not retry with IP literals, alternate proxies or tunnels. Do not claim a timeout proves a policy denial: it can also indicate an unavailable proxy or an unsupported client. A domain denylist cannot identify the same service under every alias or prevent relaying through arbitrary allowed sites. If an operator needs stronger isolation, use an allowlist and review allowed proxy/tunnel services.`,
+  },
+  {
     id: "getting-started",
     title: "Getting started and navigation",
     summary: "Account setup, menu map, first useful tasks.",

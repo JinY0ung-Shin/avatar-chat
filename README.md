@@ -7,6 +7,13 @@ plain colleagues, elevated (write/SSH/repo) for owners and group co-members.
 
 ## What it does
 
+- **Shared outbound domain blocking**: an optional [egress policy overlay](docs/egress-policy.md)
+  (Docker/containerd) routes every local avatar and server-side tool through one domain-filtering
+  proxy and blocks direct IP/DNS connections at the container firewall. System admins add, remove
+  and apply blocked domains under **관리자 → 가입·접근 → 외부 통신 차단**; each change is audited,
+  and the guide covers verification and rollback. The user's own browser bridge is outside this
+  boundary, and connections that cannot go through the proxy (direct SSH and the like) are
+  blocked as well.
 - **Built-in usage manual**: local avatars receive a compact feature index on every turn and
   read detailed guides through `mcp__system__read_manual` (the always-on system tool group). Guides cover
   setup, chat, knowledge, skills/plugins, groups/bots, scheduling, external Task API integration,

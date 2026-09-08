@@ -3268,6 +3268,21 @@ describe("buildPrompt", () => {
     expect(system).toContain("mcp__system__read_manual");
   });
 
+  it("keeps shared server egress guidance when web tools are deselected", () => {
+    const system = buildSystemPromptAppend(req({
+      mcpToolGroups: [],
+      webFetchProxy: {
+        httpProxy: "http://172.30.247.2:3128",
+        httpsProxy: "http://172.30.247.2:3128",
+        noProxy: "localhost",
+        egressPolicy: "domain-proxy",
+      },
+    }));
+    expect(system).toContain("ALL local avatars and server tools");
+    expect(system).toContain("browser bridge is outside this network boundary");
+    expect(system).toContain("does not independently audit the firewall");
+  });
+
   it("omits prompt guidance for disabled MCP tool groups", () => {
     const p = buildPrompt(
       req({

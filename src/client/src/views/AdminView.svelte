@@ -4,6 +4,7 @@
   import RevealableInput from "../components/RevealableInput.svelte";
   import AdminUserRow from "../components/AdminUserRow.svelte";
   import AdminExternalAgentsPanel from "../components/AdminExternalAgentsPanel.svelte";
+  import AdminEgressPanel from "../components/AdminEgressPanel.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
   import { loadAdminGroups, loadAdminOverview } from "../lib/loaders";
@@ -141,6 +142,8 @@
     set_model_vision_policy: "모델 비전 정책 변경",
     set_hex_ssh_policy: "hex-ssh 도구 정책 변경",
     set_tool_skill_policy: "도구·스킬 정책 변경",
+    set_egress_policy: "외부 통신 차단 정책 적용",
+    egress_policy_failed: "외부 통신 차단 정책 적용 실패",
     group_create: "그룹 생성",
     group_delete: "그룹 삭제",
     group_member_add: "그룹원 추가",
@@ -815,6 +818,7 @@
         groups={$appState.adminGroups}
         {reloadGroups}
       />
+      <AdminEgressPanel active={$appState.adminTab === "access"} />
       {#if $appState.adminTab === "overview"}
         <div class="admin-list">
           <section class="settings-card">

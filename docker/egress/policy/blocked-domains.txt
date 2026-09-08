@@ -1,0 +1,4 @@
+# One domain per line. A leading dot blocks the apex AND all subdomains.
+# Use ASCII / punycode, lowercase; no scheme, port, path or *. prefix.
+# Replace this reserved example with your actual blocked sites.
+.blocked.example

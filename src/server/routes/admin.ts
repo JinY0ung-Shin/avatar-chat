@@ -29,6 +29,7 @@ import {
   type RouterDeps,
 } from "./_shared.js";
 import { registerAdminExternalAgentRoutes } from "./adminExternalAgents.js";
+import { registerAdminEgressRoutes } from "./adminEgress.js";
 import { cleanupGroupDataDirs, groupAgentAvatarId } from "../groupAgents.js";
 import {
   personalAgentAvatarId,
@@ -41,6 +42,7 @@ export function createAdminRouter(deps: RouterDeps): Router {
   const router = Router();
 
   registerAdminExternalAgentRoutes(router, deps);
+  registerAdminEgressRoutes(router, deps);
 
   // System/runtime info: which model the agent is pinned to (config) vs. which
   // one the SDK actually reported on its last run (observed), plus the auth mode

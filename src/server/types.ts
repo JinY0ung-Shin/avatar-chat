@@ -117,6 +117,8 @@ export interface AgentOwner {
 }
 
 export interface AppConfig {
+  /** Operator-configured policy controller, never a user-selected URL. */
+  egressControlUrl?: string;
   port: number;
   /**
    * PEM paths (env `TLS_CERT_FILE`/`TLS_KEY_FILE`) that switch the app's OWN
@@ -1352,6 +1354,17 @@ export interface WebFetchProxyState {
   httpProxy: string | null;
   httpsProxy: string | null;
   noProxy: string | null;
+  /** Bootstrap-reported deployment policy; not an independent firewall audit. */
+  egressPolicy?: "domain-proxy";
+}
+
+export interface EgressPolicyState {
+  configured: boolean;
+  proxyReady: boolean;
+  domains: string[];
+  revision: string | null;
+  appliedAt: string | null;
+  appliedBy: string | null;
 }
 
 export interface AgentRequest {
@@ -1877,4 +1890,3 @@ export interface KnowledgeNote {
   /** Raw markdown body (frontmatter included); the client renders + sanitizes it. */
   content: string;
 }
-
